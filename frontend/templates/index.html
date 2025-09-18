@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Telemetria Veicular</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/styles.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-truck me-2"></i>
+                Sistema de Telemetria Veicular
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="#dashboard">Dashboard</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#upload">Upload CSV</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#relatorios">Relatórios</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#analise">Análise</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container-fluid mt-4">
+        <!-- Dashboard Section -->
+        <div id="dashboard" class="content-section">
+            <div class="row">
+                <div class="col-12">
+                    <h2><i class="fas fa-chart-dashboard me-2"></i>Dashboard</h2>
+                </div>
+            </div>
+            
+            <!-- Stats Cards -->
+            <div class="row mb-4" id="stats-cards">
+                <div class="col-md-3">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 id="total-clientes">-</h4>
+                                    <p class="mb-0">Clientes</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-users fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 id="total-veiculos">-</h4>
+                                    <p class="mb-0">Veículos</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-car fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 id="total-registros">-</h4>
+                                    <p class="mb-0">Registros</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-database fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 id="total-relatorios">-</h4>
+                                    <p class="mb-0">Relatórios</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-file-pdf fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5><i class="fas fa-clock me-2"></i>Atividade Recente</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="atividade-recente">
+                                <div class="text-center">
+                                    <div class="spinner-border" role="status">
+                                        <span class="visually-hidden">Carregando...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5><i class="fas fa-list me-2"></i>Veículos Cadastrados</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="veiculos-lista">
+                                <div class="text-center">
+                                    <div class="spinner-border" role="status">
+                                        <span class="visually-hidden">Carregando...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload Section -->
+        <div id="upload" class="content-section" style="display: none;">
+            <div class="row">
+                <div class="col-12">
+                    <h2><i class="fas fa-upload me-2"></i>Upload de Arquivos CSV</h2>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5>Enviar Arquivos de Telemetria</h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="upload-form" enctype="multipart/form-data">
+                                <div class="mb-3">
+                                    <label for="files" class="form-label">Selecionar Arquivos CSV</label>
+                                    <input type="file" class="form-control" id="files" name="files" multiple accept=".csv" required>
+                                    <div class="form-text">Selecione um ou mais arquivos CSV de telemetria.</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="cliente-nome" class="form-label">Nome do Cliente (Opcional)</label>
+                                    <input type="text" class="form-control" id="cliente-nome" name="cliente_nome" placeholder="Ex: JANDAIA">
+                                    <div class="form-text">Se não informado, será usado o nome do cliente no CSV.</div>
+                                </div>
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="fas fa-upload me-2"></i>Processar Arquivos
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h5>Resultado do Processamento</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="upload-result">
+                                <p class="text-muted">Nenhum arquivo processado ainda.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <h5><i class="fas fa-database me-2"></i>Gerenciamento de Dados</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Limpe todos os dados armazenados para fazer uploads limpos.</p>
+                            <div class="alert alert-warning alert-sm">
+                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                <strong>Atenção:</strong> Esta ação removerá todos os dados de veículos e posições.
+                            </div>
+                            <button type="button" class="btn btn-danger btn-sm w-100" id="clear-database-btn">
+                                <i class="fas fa-trash-alt me-2"></i>Limpar Banco de Dados
+                            </button>
+                            <div id="clear-result" class="mt-2"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reports Section -->
+        <div id="relatorios" class="content-section" style="display: none;">
+            <div class="row">
+                <div class="col-12">
+                    <h2><i class="fas fa-file-pdf me-2"></i>Geração de Relatórios</h2>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5>Gerar Novo Relatório</h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="relatorio-form">
+                                <div class="mb-3">
+                                    <label for="veiculo-placa" class="form-label">Placa do Veículo</label>
+                                    <select class="form-select" id="veiculo-placa" name="placa" required>
+                                        <option value="">Selecione um veículo...</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="data-inicio" class="form-label">Data Início</label>
+                                    <input type="date" class="form-control" id="data-inicio" name="data_inicio" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="data-fim" class="form-label">Data Fim</label>
+                                    <input type="date" class="form-control" id="data-fim" name="data_fim" required>
+                                </div>
+                                <button type="submit" class="btn btn-success">
+                                    <i class="fas fa-file-pdf me-2"></i>Gerar Relatório PDF
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5>Relatórios Disponíveis</h5>
+                        </div>
+                        <div class="card-body">
+                            <!-- Filter Controls -->
+                            <div class="row mb-3">
+                                <div class="col-md-6">
+                                    <label for="filter-veiculo" class="form-label">Filtrar por Veículo</label>
+                                    <select class="form-select form-select-sm" id="filter-veiculo">
+                                        <option value="">Todos os veículos</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="filter-data" class="form-label">Filtrar por Data</label>
+                                    <input type="date" class="form-control form-control-sm" id="filter-data">
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-sm mb-3" id="apply-filters-btn">
+                                <i class="fas fa-filter me-1"></i>Aplicar Filtros
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm mb-3 ms-2" id="clear-filters-btn">
+                                <i class="fas fa-times me-1"></i>Limpar Filtros
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm mb-3 ms-2" id="clear-reports-btn">
+                                <i class="fas fa-trash-alt me-1"></i>Limpar Histórico
+                            </button>
+                            
+                            <div id="relatorios-lista">
+                                <div class="text-center">
+                                    <div class="spinner-border" role="status">
+                                        <span class="visually-hidden">Carregando...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analysis Section -->
+        <div id="analise" class="content-section" style="display: none;">
+            <div class="row">
+                <div class="col-12">
+                    <h2><i class="fas fa-chart-line me-2"></i>Análise de Dados</h2>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5>Parâmetros de Análise</h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="analise-form">
+                                <div class="mb-3">
+                                    <label for="analise-veiculo" class="form-label">Veículo</label>
+                                    <select class="form-select" id="analise-veiculo" name="placa" required>
+                                        <option value="">Selecione um veículo...</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="analise-inicio" class="form-label">Data Início</label>
+                                    <input type="date" class="form-control" id="analise-inicio" name="data_inicio" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="analise-fim" class="form-label">Data Fim</label>
+                                    <input type="date" class="form-control" id="analise-fim" name="data_fim" required>
+                                </div>
+                                <div class="mb-3">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="enable-detailed-map" name="detailed_map">
+                                        <label class="form-check-label" for="enable-detailed-map">
+                                            <small>Habilitar Mapa Detalhado</small>
+                                        </label>
+                                    </div>
+                                    <small class="text-muted">Gera mapa com dados operacionais detalhados por período</small>
+                                </div>
+                                <button type="submit" class="btn btn-info">
+                                    <i class="fas fa-search me-2"></i>Gerar Análise
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5>Resultado da Análise</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="analise-resultado">
+                                <p class="text-muted">Selecione um veículo e período para gerar a análise.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div class="modal fade" id="loadingModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-body text-center">
+                    <div class="spinner-border text-primary mb-3" role="status">
+                        <span class="visually-hidden">Carregando...</span>
+                    </div>
+                    <p>Processando...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.5.0/axios.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
