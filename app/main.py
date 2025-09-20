@@ -15,8 +15,8 @@ import tempfile
 from pathlib import Path
 
 from .models import init_database, get_session, Cliente, Veiculo, PosicaoHistorica, RelatorioGerado
-from .utils import CSVProcessor, process_csv_files, convert_numpy_types
-from .services import ReportGenerator
+from .utils import CSVProcessor, convert_numpy_types
+from .services import ReportGenerator, TelemetryAnalyzer
 from .reports import generate_consolidated_vehicle_report
 # Removed old generate_vehicle_report - now uses standardized consolidated generation
 
@@ -222,7 +222,7 @@ async def upload_csv(
                 metrics = processor.calculate_metrics(df_clean)
                 
                 # Salva no banco
-                success = processor.save_to_database(df_clean, cliente_nome)
+                success = processor.save_to_database(df_clean, cliente_nome or "Cliente Padrão")
                 
                 results[file.filename] = {
                     "success": success,
