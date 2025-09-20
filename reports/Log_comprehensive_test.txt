@@ -1,0 +1,27 @@
+Processamento concluído em 2025-09-19T19:42:34.235708
+Total de linhas lidas: 20
+Linhas válidas: 20
+Pontos removidos: 0
+Outliers detectados: 0
+
+Mapeamento de colunas detectadas:
+  timestamp → timestamp
+  lat → lat
+  lon → lon
+  odometer → odometer
+  speed → speed
+  vehicle_id → vehicle_id
+  client_id → client_id
+
+Colunas ausentes:
+  ignition
+
+Fallbacks aplicados:
+
+Regras aplicadas:
+  speed_outlier_threshold: 220
+  trip_speed_threshold: 3
+  trip_min_duration_s: 60
+  gps_jump_distance_km: 500
+
+Checksum: 1|20

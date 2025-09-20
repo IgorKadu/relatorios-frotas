@@ -4,7 +4,7 @@ Módulo para geração de relatórios PDF com insights de telemetria veicular.
 
 import os
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from io import BytesIO
 import matplotlib.pyplot as plt
@@ -25,11 +25,132 @@ from reportlab.graphics.charts.linecharts import HorizontalLineChart
 from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.graphics.widgets.markers import makeMarker
+from html import escape
 import pandas as pd
 import numpy as np
 
 from .services import ReportGenerator
 from .models import get_session, Veiculo, Cliente
+
+
+def format_weekend_title(start_date: datetime, end_date: datetime) -> str:
+    """
+    Formata o título do final de semana de forma padronizada e profissional,
+    exibindo o intervalo Sábado + Domingo neste formato: "Final de Semana (21/09/2025 + 22/09/2025)".
+    """
+    interval = format_weekend_interval(start_date, end_date)
+    return f"Final de Semana ({interval})" if interval else "Final de Semana"
+
+
+def format_weekend_interval(start_date: datetime, end_date: datetime) -> str:
+    """
+    Retorna apenas o intervalo de datas do final de semana (Sábado - Domingo) no
+    formato "dd/mm/yyyy - dd/mm/yyyy". Se não encontrar o par completo, retorna vazio.
+    """
+    saturday = None
+    sunday = None
+    current_date = start_date
+
+    # Primeiro, tenta encontrar um par consecutivo Sábado->Domingo
+    while current_date <= end_date:
+        if current_date.weekday() == 5:  # Sábado
+            nxt = current_date + timedelta(days=1)
+            if nxt <= end_date and nxt.weekday() == 6:  # Domingo
+                saturday = current_date
+                sunday = nxt
+                break
+        current_date += timedelta(days=1)
+
+    # Se não encontrou par consecutivo, tenta localizar separadamente
+    if not (saturday and sunday):
+        current_date = start_date
+        while current_date <= end_date and (not saturday or not sunday):
+            if current_date.weekday() == 5 and not saturday:
+                saturday = current_date
+            if current_date.weekday() == 6 and not sunday:
+                sunday = current_date
+            current_date += timedelta(days=1)
+
+    if saturday and sunday:
+        return f"{saturday.strftime('%d/%m/%Y')} + {sunday.strftime('%d/%m/%Y')}"
+    return ""
+
+
+def safe_numeric_sum(data_list: List, field: str) -> float:
+    """
+    Soma valores numéricos de uma lista de forma segura
+    """
+    total = 0.0
+    for item in data_list:
+        value = item.get(field, 0)
+        try:
+            total += float(value or 0)
+        except (ValueError, TypeError):
+            continue
+    return total
+
+
+def safe_numeric_max(data_list: List, field: str) -> float:
+    """
+    Encontra o valor máximo de uma lista de forma segura
+    """
+    max_val = 0.0
+    for item in data_list:
+        value = item.get(field, 0)
+        try:
+            max_val = max(max_val, float(value or 0))
+        except (ValueError, TypeError):
+            continue
+    return max_val
+
+# =====================
+# Helper de formatação de velocidade (nível de módulo)
+# =====================
+from typing import Optional
+
+def _format_br_number(value: float, decimals: int = 0) -> str:
+    """Formata número no padrão brasileiro: milhar com ponto e decimais com vírgula."""
+    try:
+        v = float(value or 0)
+    except (ValueError, TypeError):
+        v = 0.0
+    formatted = f"{v:,.{decimals}f}"
+    # Converte padrão en_US -> pt_BR
+    return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
+def format_speed(speed: Optional[float], distance_km: Optional[float] = None, include_unit: bool = True, decimals: int = 0) -> str:
+    """
+    Formata velocidade máxima com regras de negócio e locale BR.
+    Regras:
+    - Ocultar (retornar '—') quando velocidade == 0 e km_total > 0.
+    - Quando km_total == 0 e velocidade == 0, exibir "0 km/h" (ou "0" se include_unit=False).
+    - Tratar None/negativos como 0.
+    - Aplicar separadores brasileiros e casas decimais configuráveis (padrão 0).
+    """
+    # Sanitização de entradas
+    try:
+        v = float(speed or 0)
+    except (ValueError, TypeError):
+        v = 0.0
+    if v < 0:
+        v = 0.0
+
+    dist = None
+    if distance_km is not None:
+        try:
+            dist = float(distance_km or 0)
+        except (ValueError, TypeError):
+            dist = 0.0
+        if dist < 0:
+            dist = 0.0
+
+    # Regra de ocultação
+    if v == 0.0 and (dist is not None and dist > 0):
+        return '—'
+
+    # Formatação padrão BR
+    text = _format_br_number(v, decimals)
+    return f"{text} km/h" if include_unit else text
 
 class PDFReportGenerator:
     """Classe para gerar relatórios PDF profissionais"""
@@ -45,10 +166,11 @@ class PDFReportGenerator:
         self.styles.add(ParagraphStyle(
             name='TitleStyle',
             parent=self.styles['Title'],
-            fontSize=24,
-            textColor=colors.HexColor('#2C3E50'),
+            fontSize=26,
+            textColor=colors.HexColor('#1A4B8C'),
             alignment=TA_CENTER,
-            spaceAfter=20
+            spaceAfter=25,
+            fontName='Helvetica-Bold'
         ))
         
         # Estilo de subtítulo
@@ -61,6 +183,34 @@ class PDFReportGenerator:
             spaceBefore=15,
             spaceAfter=10
         ))
+        
+        # Estilos padronizados com o consolidado
+        try:
+            self.styles.add(ParagraphStyle(
+                name='SectionTitle',
+                parent=self.styles['Heading1'],
+                fontSize=18,
+                textColor=colors.HexColor('#2E86AB'),
+                alignment=TA_LEFT,
+                spaceBefore=20,
+                spaceAfter=12,
+                fontName='Helvetica-Bold'
+            ))
+        except KeyError:
+            pass
+        try:
+            self.styles.add(ParagraphStyle(
+                name='SubsectionTitle',
+                parent=self.styles['Heading2'],
+                fontSize=14,
+                textColor=colors.HexColor('#34495E'),
+                alignment=TA_LEFT,
+                spaceBefore=12,
+                spaceAfter=8,
+                fontName='Helvetica-Bold'
+            ))
+        except KeyError:
+            pass
         
         # Estilo para métricas
         self.styles.add(ParagraphStyle(
@@ -90,12 +240,12 @@ class PDFReportGenerator:
         
         # Título principal
         title = f"Relatório de Telemetria Veicular"
-        story.append(Paragraph(title, self.styles['TitleStyle']))
+        story.append(Paragraph(escape(title), self.styles['TitleStyle']))
         
         # Informações do veículo
         veiculo_info = metrics.get('veiculo', {})
-        cliente = veiculo_info.get('cliente', 'N/A')
-        placa = veiculo_info.get('placa', 'N/A')
+        cliente = escape(str(veiculo_info.get('cliente', 'N/A')))
+        placa = escape(str(veiculo_info.get('placa', 'N/A')))
         
         story.append(Spacer(1, 30))
         
@@ -126,7 +276,7 @@ class PDFReportGenerator:
         
         # Data de geração
         data_geracao = datetime.now().strftime('%d/%m/%Y às %H:%M')
-        story.append(Paragraph(f"Relatório gerado em: {data_geracao}", 
+        story.append(Paragraph(f"Relatório gerado em: {escape(data_geracao)}", 
                               self.styles['Normal']))
         
         story.append(PageBreak())
@@ -136,7 +286,7 @@ class PDFReportGenerator:
         """Cria o sumário executivo"""
         story = []
         
-        story.append(Paragraph("Sumário Executivo", self.styles['SubtitleStyle']))
+        story.append(Paragraph("1. Sumário Executivo", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
         
         operacao = metrics.get('operacao', {})
         
@@ -144,8 +294,8 @@ class PDFReportGenerator:
         summary_data = [
             ['Métrica', 'Valor'],
             ['Total de Registros', f"{operacao.get('total_registros', 0):,}"],
-            ['Quilometragem Total', f"{operacao.get('km_total', 0):.2f} km"],
-            ['Velocidade Máxima', f"{operacao.get('velocidade_maxima', 0)} km/h"],
+            ['Quilometragem Total', self._format_distance(operacao.get('km_total', 0), decimals=2)],
+            ['Velocidade Máxima', format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0), include_unit=True, decimals=0)],
             ['Velocidade Média', f"{operacao.get('velocidade_media', 0):.1f} km/h"],
             ['Tempo Ligado', f"{operacao.get('tempo_total_ligado', 0)} registros"],
             ['Tempo em Movimento', f"{operacao.get('tempo_em_movimento', 0)} registros"]
@@ -161,14 +311,19 @@ class PDFReportGenerator:
         
         summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
         summary_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498DB')),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 12),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F4F6F7')),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(summary_table)
@@ -178,21 +333,71 @@ class PDFReportGenerator:
         story.append(Paragraph("Principais Insights:", self.styles['SubtitleStyle']))
         
         for insight in insights[:5]:  # Limita a 5 insights principais
-            story.append(Paragraph(f"• {insight}", self.styles['InsightStyle']))
+            story.append(Paragraph(f"• {escape(str(insight))}", self.styles['InsightStyle']))
         
-        story.append(PageBreak())
         return story
     
+    def create_period_performance(self, metrics: Dict) -> List:
+        """Adiciona a seção 'Desempenho Geral no Período' padronizada (igual ao consolidado)
+        para um único veículo (uma linha).
+        """
+        story = []
+        veiculo_info = metrics.get('veiculo', {})
+        operacao = metrics.get('operacao', {})
+        fuel = metrics.get('combustivel', {})
+
+        # Título padronizado da seção
+        story.append(Paragraph("2. Desempenho Geral no Período", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+        story.append(Paragraph(
+            "Tabela consolidada com dados gerais do veículo no período:",
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 10))
+
+        # Cabeçalho e linha única (veículo atual)
+        headers = ['Placa', 'Km', 'Vel. Máx.', 'Combustível', 'Eficiência']
+        row = [
+            veiculo_info.get('placa', 'N/A'),
+            self._format_distance(operacao.get('km_total', 0), decimals=2),
+            format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0), include_unit=False, decimals=0),
+            f"{fuel.get('fuel_consumed_liters', 0.0):.1f}",
+            f"{fuel.get('efficiency_kmL', 0.0):.1f}"
+        ]
+
+        table = Table([headers, row], colWidths=[1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F4F6F7')),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenções de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),
+        ]))
+
+        story.append(table)
+        story.append(Spacer(1, 20))
+        return story
+
     def create_operational_analysis(self, metrics: Dict) -> List:
         """Cria análise operacional detalhada similar ao exemplo fornecido"""
         story = []
+        
+        story.append(Paragraph("3. Desempenho Diário por Horário Operacional", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+        story.append(Spacer(1, 10))
         
         periodos = metrics.get('periodos', {})
         veiculo_info = metrics.get('veiculo', {})
         operacao = metrics.get('operacao', {})
         
         # DENTRO DO HORÁRIO OPERACIONAL
-        story.append(Paragraph("DENTRO DO HORÁRIO OPERACIONAL", self.styles['SubtitleStyle']))
+        story.append(Paragraph("DENTRO DO HORÁRIO OPERACIONAL", self.styles.get('SubsectionTitle', self.styles['SubtitleStyle'])))
         
         # Períodos operacionais com tabelas detalhadas
         periods = [
@@ -207,7 +412,7 @@ class PDFReportGenerator:
             data = [
                 ['Cliente', 'Placa', 'Velocidade máxima atingida(Km/h)', 'Odômetro (Km)', 'Tempo total ligado', 'Tempo em movimento', 'Tempo ocioso', 'Tempo desligado', 'Período', 'Setor'],
                 [veiculo_info.get('cliente', 'N/A')[:8], veiculo_info.get('placa', 'N/A'), 
-                 str(operacao.get('velocidade_maxima', 0)), f"{operacao.get('km_total', 0):.2f}",
+                 '—', '—',
                  f"{periodos.get(period_key, 0):02d}:00", 
                  f"{operacao.get('tempo_em_movimento', 0):02d}:00",
                  f"{operacao.get('tempo_parado_ligado', 0):02d}:00",
@@ -226,7 +431,11 @@ class PDFReportGenerator:
                 ('BACKGROUND', (0, 1), (-1, -1), bg_color),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                # Prevenção de quebras
+                ('NOSPLIT', (0, 0), (-1, -1)),
+                ('WORDWRAP', (0, 0), (-1, -1)),
+                ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
             ]))
             
             story.append(table)
@@ -234,12 +443,12 @@ class PDFReportGenerator:
         
         # TOTAL OPERACIONAL
         total_op = periodos.get('operacional_manha', 0) + periodos.get('operacional_meio_dia', 0) + periodos.get('operacional_tarde', 0)
-        story.append(Paragraph("TOTAL - DENTRO DO HORÁRIO OPERACIONAL", self.styles['Normal']))
+        story.append(Paragraph("TOTAL - DENTRO DO HORÁRIO OPERACIONAL", self.styles.get('SubsectionTitle', self.styles['SubtitleStyle'])))
         
         total_data = [
             ['Cliente', 'Placa', 'Velocidade máxima atingida(Km/h)', 'Odômetro (Km)', 'Tempo total ligado', 'Tempo em movimento', 'Tempo ocioso', 'Tempo desligado', 'Período', 'Setor'],
             [veiculo_info.get('cliente', 'N/A')[:8], veiculo_info.get('placa', 'N/A'), 
-             str(operacao.get('velocidade_maxima', 0)), f"{operacao.get('km_total', 0):.2f}",
+             format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0), include_unit=False, decimals=0), self._format_distance(operacao.get('km_total', 0), decimals=2),
              f"{total_op:02d}:00", 
              f"{operacao.get('tempo_em_movimento', 0):02d}:00",
              f"{operacao.get('tempo_parado_ligado', 0):02d}:00",
@@ -256,45 +465,62 @@ class PDFReportGenerator:
             ('FONTSIZE', (0, 0), (-1, -1), 8),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(total_table)
         story.append(PageBreak())
         
-        # FINAL DE SEMANA
-        story.append(Paragraph("FINAL DE SEMANA - SÁBADO + DOMINGO", self.styles['SubtitleStyle']))
+        # FINAL DE SEMANA - título dinâmico com as duas datas
+        weekend_title = format_weekend_title(veiculo_info.get('periodo_analise', {}).get('inicio', datetime.now()), 
+                                           veiculo_info.get('periodo_analise', {}).get('fim', datetime.now()))
+        story.append(Paragraph(weekend_title, self.styles.get('SubsectionTitle', self.styles['SubtitleStyle'])))
+        
+        # Exibição neutra: não estimar km/velocidade no final de semana se não houver granularidade específica
+        weekend_period_text = format_weekend_interval(
+            veiculo_info.get('periodo_analise', {}).get('inicio', datetime.now()),
+            veiculo_info.get('periodo_analise', {}).get('fim', datetime.now())
+        ) or f"{str(veiculo_info.get('periodo_analise', {}).get('inicio', 'N/A'))[:10]} - {str(veiculo_info.get('periodo_analise', {}).get('fim', 'N/A'))[:10]}"
         
         weekend_data = [
             ['Cliente', 'Placa', 'Velocidade máxima atingida(Km/h)', 'Odômetro (Km)', 'Tempo total ligado', 'Tempo em movimento', 'Tempo ocioso', 'Tempo desligado', 'Período', 'Setor'],
             [veiculo_info.get('cliente', 'N/A')[:8], veiculo_info.get('placa', 'N/A'), 
-             str(operacao.get('velocidade_maxima', 0)), f"{operacao.get('km_total', 0):.2f}",
+             '—', '—',
              f"{periodos.get('final_semana', 0):02d}:00", 
              f"{operacao.get('tempo_em_movimento', 0):02d}:00",
              f"{operacao.get('tempo_parado_ligado', 0):02d}:00",
              f"{operacao.get('tempo_desligado', 0):02d}:00",
-             f"{str(veiculo_info.get('periodo_analise', {}).get('inicio', 'N/A'))[:10]} - {str(veiculo_info.get('periodo_analise', {}).get('fim', 'N/A'))[:10]}",
+             weekend_period_text,
              'ESCOLAR']
         ]
         
         weekend_table = Table(weekend_data, colWidths=[0.6*inch, 0.6*inch, 0.9*inch, 0.7*inch, 0.8*inch, 0.8*inch, 0.7*inch, 0.8*inch, 1.2*inch, 0.6*inch])
         weekend_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E91E63')),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2C3E50')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 8),
-            ('FONTSIZE', (0, 1), (-1, -1), 7),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.lightpink),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#F9F9F9'), colors.HexColor('#FFFFFF')]),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#B0BEC5')),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(weekend_table)
         story.append(Spacer(1, 20))
         
         # FORA DO HORÁRIO
-        story.append(Paragraph("FORA DO HORÁRIO", self.styles['SubtitleStyle']))
+        story.append(Paragraph("FORA DO HORÁRIO", self.styles.get('SubsectionTitle', self.styles['SubtitleStyle'])))
         
         out_periods = [
             ('07:00 as 10:50', 'fora_horario_manha'),
@@ -307,7 +533,7 @@ class PDFReportGenerator:
             data = [
                 ['Cliente', 'Placa', 'Velocidade máxima atingida(Km/h)', 'Odômetro (Km)', 'Tempo total ligado', 'Tempo em movimento', 'Tempo ocioso', 'Tempo desligado', 'Período', 'Setor'],
                 [veiculo_info.get('cliente', 'N/A')[:8], veiculo_info.get('placa', 'N/A'), 
-                 str(operacao.get('velocidade_maxima', 0)), f"{operacao.get('km_total', 0):.2f}",
+                 format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0), include_unit=False, decimals=0), self._format_distance(operacao.get('km_total', 0), decimals=2),
                  f"{periodos.get(period_key, 0):02d}:00", 
                  f"{operacao.get('tempo_em_movimento', 0):02d}:00",
                  f"{operacao.get('tempo_parado_ligado', 0):02d}:00",
@@ -326,7 +552,11 @@ class PDFReportGenerator:
                 ('BACKGROUND', (0, 1), (-1, -1), colors.mistyrose),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                # Prevenção de quebras
+                ('NOSPLIT', (0, 0), (-1, -1)),
+                ('WORDWRAP', (0, 0), (-1, -1)),
+                ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
             ]))
             
             story.append(table)
@@ -339,7 +569,7 @@ class PDFReportGenerator:
         total_fora_data = [
             ['Cliente', 'Placa', 'Velocidade máxima atingida(Km/h)', 'Odômetro (Km)', 'Tempo total ligado', 'Tempo em movimento', 'Tempo ocioso', 'Tempo desligado', 'Período', 'Setor'],
             [veiculo_info.get('cliente', 'N/A')[:8], veiculo_info.get('placa', 'N/A'), 
-             str(operacao.get('velocidade_maxima', 0)), f"{operacao.get('km_total', 0):.2f}",
+             '—', '—',
              f"{total_fora:02d}:00", 
              f"{operacao.get('tempo_em_movimento', 0):02d}:00",
              f"{operacao.get('tempo_parado_ligado', 0):02d}:00",
@@ -356,17 +586,21 @@ class PDFReportGenerator:
             ('FONTSIZE', (0, 0), (-1, -1), 8),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(total_fora_table)
-        story.append(PageBreak())
-        return story
+        story.append(Spacer(1, 12))
         
-        # Análise de conectividade
+        # Análise de Conectividade (padronizada)
         conectividade = metrics.get('conectividade', {})
         if conectividade:
-            story.append(Paragraph("Status de Conectividade:", self.styles['Normal']))
+            story.append(Paragraph("Status de Conectividade", self.styles.get('SubsectionTitle', self.styles['SubtitleStyle'])))
+            story.append(Spacer(1, 6))
             
             conn_data = [
                 ['Indicador', 'Status', 'Observações'],
@@ -383,7 +617,11 @@ class PDFReportGenerator:
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 11),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                # Prevenção de quebras
+                ('NOSPLIT', (0, 0), (-1, -1)),
+                ('WORDWRAP', (0, 0), (-1, -1)),
+                ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
             ]))
             
             story.append(conn_table)
@@ -406,7 +644,7 @@ class PDFReportGenerator:
         # Dados de combustível
         fuel_info = [
             ['Métrica', 'Valor', 'Unidade'],
-            ['Distância Percorrida', f"{fuel_data['km_traveled']:.2f}", 'km'],
+            ['Distância Percorrida', self._format_distance(fuel_data['km_traveled'], decimals=2), '—'],
             ['Combustível Estimado', f"{fuel_data['fuel_consumed_liters']:.2f}", 'litros'],
             ['Eficiência Real', f"{fuel_data['efficiency_kmL']:.2f}", 'km/L'],
             ['Velocidade Média', f"{fuel_data['avg_speed']:.2f}", 'km/h']
@@ -420,7 +658,11 @@ class PDFReportGenerator:
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 11),
             ('BACKGROUND', (0, 1), (-1, -1), colors.lightyellow),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(fuel_table)
@@ -441,7 +683,7 @@ class PDFReportGenerator:
             recommendations.append("• Eficiência dentro do esperado - manter práticas atuais de condução")
         
         for rec in recommendations:
-            story.append(Paragraph(rec, self.styles['InsightStyle']))
+            story.append(Paragraph(escape(str(rec)), self.styles['InsightStyle']))
         
         story.append(PageBreak())
         return story
@@ -462,25 +704,25 @@ class PDFReportGenerator:
         if security_insights:
             story.append(Paragraph("Segurança e Conformidade:", self.styles['Normal']))
             for insight in security_insights:
-                story.append(Paragraph(f"• {insight}", self.styles['InsightStyle']))
+                story.append(Paragraph(f"• {escape(str(insight))}", self.styles['InsightStyle']))
             story.append(Spacer(1, 10))
         
         if efficiency_insights:
             story.append(Paragraph("Eficiência Operacional:", self.styles['Normal']))
             for insight in efficiency_insights:
-                story.append(Paragraph(f"• {insight}", self.styles['InsightStyle']))
+                story.append(Paragraph(f"• {escape(str(insight))}", self.styles['InsightStyle']))
             story.append(Spacer(1, 10))
         
         if operation_insights:
             story.append(Paragraph("Otimização Operacional:", self.styles['Normal']))
             for insight in operation_insights:
-                story.append(Paragraph(f"• {insight}", self.styles['InsightStyle']))
+                story.append(Paragraph(f"• {escape(str(insight))}", self.styles['InsightStyle']))
             story.append(Spacer(1, 10))
         
         if connectivity_insights:
             story.append(Paragraph("Conectividade e Monitoramento:", self.styles['Normal']))
             for insight in connectivity_insights:
-                story.append(Paragraph(f"• {insight}", self.styles['InsightStyle']))
+                story.append(Paragraph(f"• {escape(str(insight))}", self.styles['InsightStyle']))
         
         # Plano de ação geral
         story.append(Spacer(1, 20))
@@ -495,7 +737,7 @@ class PDFReportGenerator:
         ]
         
         for action in action_plan:
-            story.append(Paragraph(action, self.styles['InsightStyle']))
+            story.append(Paragraph(escape(str(action)), self.styles['InsightStyle']))
         
         return story
     
@@ -531,6 +773,9 @@ class PDFReportGenerator:
             
             # Sumário executivo
             story.extend(self.create_executive_summary(analysis['metrics'], analysis['insights']))
+            
+            # Desempenho geral no período (padronizado)
+            story.extend(self.create_period_performance(analysis['metrics']))
             
             # Análise operacional detalhada com nova estrutura
             story.extend(self.create_operational_analysis(analysis['metrics']))
@@ -575,14 +820,23 @@ def generate_vehicle_report(placa: str, data_inicio: datetime, data_fim: datetim
     
     return generator.generate_pdf_report(placa, data_inicio, data_fim, output_path)
 
-def generate_consolidated_vehicle_report(data_inicio: datetime, data_fim: datetime, output_dir: Optional[str] = None, cliente_nome: Optional[str] = None) -> Dict:
+def generate_consolidated_vehicle_report(data_inicio: datetime, data_fim: datetime, output_dir: Optional[str] = None, cliente_nome: Optional[str] = None, vehicle_filter: Optional[str] = None) -> Dict:
     """
-    Gera relatório consolidado em PDF com foco no cliente usando nova estrutura de dados
+    Gera relatório consolidado em PDF com estrutura padronizada para qualquer filtro
+    
+    Args:
+        data_inicio: Data de início do período
+        data_fim: Data de fim do período
+        output_dir: Diretório de saída para o PDF
+        cliente_nome: Nome do cliente para filtrar (opcional)
+        vehicle_filter: Placa do veículo para filtrar (opcional, para relatórios individuais)
     """
     try:
         # Usa o novo método do ReportGenerator para obter dados estruturados
         report_gen = ReportGenerator()
-        consolidated_result = report_gen.generate_consolidated_report(data_inicio, data_fim, cliente_nome, output_dir or '')
+        consolidated_result = report_gen.generate_consolidated_report(
+            data_inicio, data_fim, cliente_nome, output_dir or '', vehicle_filter
+        )
         
         if not consolidated_result.get('success'):
             return consolidated_result
@@ -595,8 +849,13 @@ def generate_consolidated_vehicle_report(data_inicio: datetime, data_fim: dateti
         generator = ConsolidatedPDFGenerator()
         
         if output_dir:
-            cliente_nome_clean = structured_data['cliente_info']['nome'].replace(' ', '_').replace('/', '_')
-            filename = f"relatorio_consolidado_{cliente_nome_clean}_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf"
+            if vehicle_filter:
+                # Relatório individual com estrutura padronizada
+                filename = f"relatorio_{vehicle_filter}_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf"
+            else:
+                # Relatório consolidado
+                cliente_nome_clean = structured_data['cliente_info']['nome'].replace(' ', '_').replace('/', '_')
+                filename = f"relatorio_consolidado_{cliente_nome_clean}_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf"
             output_path = os.path.join(output_dir, filename)
         else:
             output_path = None
@@ -691,9 +950,33 @@ class ConsolidatedPDFGenerator:
             fontName='Helvetica-Bold'
         ))
     
+    def _format_distance(self, km_value: float, decimals: int = 1) -> str:
+        """Formata distância de modo inteligente: usa metros quando < 1 km, caso contrário km."""
+        try:
+            if km_value is None:
+                return '0 m'
+            if km_value < 0:
+                km_value = 0
+            if km_value < 1:
+                metros = round(km_value * 1000)
+                return f"{metros:,} m".replace(',', '.')
+            fmt = f"{{:,.{decimals}f}} km"
+            return fmt.format(km_value).replace(',', 'X').replace('.', ',').replace('X', '.')
+        except Exception:
+            try:
+                return f"{float(km_value):.{decimals}f} km"
+            except Exception:
+                return '0 km'
+
+    def _add_smart_break_if_needed(self, story, min_space_needed=200):
+        """Adiciona quebra de página inteligente se necessário"""
+        # Esta função pode ser usada para adicionar quebras de página inteligentes
+        # Por enquanto, não faz nada pois o ReportLab já gerencia bem as quebras
+        pass
+    
     def generate_consolidated_pdf(self, structured_data: Dict, data_inicio: datetime, 
                                 data_fim: datetime, output_path: Optional[str], total_km: float, total_fuel: float) -> Dict:
-        """Gera o PDF consolidado com nova estrutura: períodos + veículos juntos, rankings e dados diários"""
+        """Gera o PDF consolidado com estrutura adaptativa baseada em volume de dados e duração do período"""
         try:
             if not output_path:
                 filename = f"relatorio_consolidado_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf"
@@ -701,36 +984,86 @@ class ConsolidatedPDFGenerator:
             
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            doc = SimpleDocTemplate(output_path, pagesize=A4, rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=50)
+            # Determina o modo adaptativo baseado na duração do período e volume de dados
+            # Handle same day periods (when start and end date are the same)
+            if data_inicio.date() == data_fim.date():
+                period_duration_days = 0
+            else:
+                period_duration_days = (data_fim - data_inicio).days
+            vehicle_count = structured_data['resumo_geral']['total_veiculos']
+            
+            # Modo de apresentação adaptativo
+            # When start and end date are the same, treat as valid single-day period and default to Detailed Mode
+            if period_duration_days == 0 or (period_duration_days <= 7 and vehicle_count <= 5):
+                # Modo detalhado para períodos curtos e poucos veículos (inclui períodos de um dia)
+                presentation_mode = 'detailed'
+                doc = SimpleDocTemplate(output_path, pagesize=A4, rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=50)
+            elif period_duration_days <= 30:
+                # Modo balanceado para períodos médios
+                presentation_mode = 'balanced'
+                doc = SimpleDocTemplate(output_path, pagesize=A4, rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=50)
+            else:
+                # Modo resumido para períodos longos
+                presentation_mode = 'summary'
+                doc = SimpleDocTemplate(output_path, pagesize=A4, rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=50)
+            
             story = []
             
             # CABEÇALHO
             cliente_nome = structured_data['cliente_info']['nome']
-            title = f"Relatório Consolidado de Frota – {cliente_nome}"
+            
+            # Título adaptativo baseado no número de veículos
+            if vehicle_count == 1:
+                # Relatório individual com estrutura padronizada
+                # Pega a placa do primeiro veículo nos dados
+                vehicle_placa = "N/A"
+                if 'desempenho_periodo' in structured_data and structured_data['desempenho_periodo']:
+                    vehicle_placa = structured_data['desempenho_periodo'][0]['placa']
+                title = f"Relatório de Frota – {cliente_nome} – {vehicle_placa}"
+            else:
+                # Relatório consolidado
+                title = f"Relatório Consolidado de Frota – {cliente_nome}"
+                
             story.append(Paragraph(title, self.styles['TitleStyle']))
             story.append(Spacer(1, 10))
             
-            periodo_text = f"<b>Período:</b> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
+            periodo_text = f"<b>Período:</b> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')} ({period_duration_days if period_duration_days > 0 else 1} dia{'s' if period_duration_days != 1 else ''})"
             story.append(Paragraph(periodo_text, self.styles['Normal']))
             story.append(Spacer(1, 25))
             
-            # 1. RESUMO GERAL
+            # 1. RESUMO GERAL (sempre incluído)
             self._add_general_summary(story, structured_data, total_km, total_fuel)
             
-            # 2. DESEMPENHO GERAL DO PERÍODO
+            # 2. DESEMPENHO GERAL DO PERÍODO (sempre incluído)
             self._add_period_performance_table(story, structured_data)
             
-            # 3. PERÍODOS + VEÍCULOS
-            self._add_periods_with_vehicles(story, structured_data)
+            # 3. DETALHAMENTO/AGREGAÇÃO CONFORME DURAÇÃO
+            if period_duration_days > 7:
+                # Para períodos longos, não mostrar detalhamento diário, apenas agregados e gráficos semanais
+                self._add_periods_aggregated(story, structured_data)
+                self._add_weekly_performance_charts(story, structured_data)
+            else:
+                if presentation_mode == 'detailed':
+                    # Modo detalhado - inclui todos os períodos e dias
+                    self._add_periods_with_vehicles(story, structured_data)
+                elif presentation_mode == 'balanced':
+                    # Modo balanceado - inclui períodos mas com agrupamento
+                    self._add_periods_with_vehicles_balanced(story, structured_data)
+                else:
+                    # Modo resumido - apenas informações agregadas
+                    self._add_period_summary(story, structured_data)
             
-            # 4. RANKINGS
-            self._add_performance_rankings(story, structured_data)
+            # 4. RANKINGS (apenas para relatórios com múltiplos veículos)
+            if vehicle_count > 1:
+                self._add_performance_rankings(story, structured_data)
             
-            # 5. DIÁRIO
-            self._add_daily_performance(story, structured_data)
-            
-            # 6. OBSERVAÇÕES
-            self._add_footer_observations(story)
+            # Add only the generation timestamp at the end
+            story.append(Spacer(1, 30))
+            data_geracao = datetime.now().strftime('%d/%m/%Y às %H:%M')
+            story.append(Paragraph(
+                f"<i>Relatório gerado em: {data_geracao}</i>",
+                self.styles['ObservationStyle']
+            ))
             
             doc.build(story)
             
@@ -741,7 +1074,8 @@ class ConsolidatedPDFGenerator:
                 'success': True,
                 'file_path': output_path,
                 'file_size_mb': file_size_mb,
-                'message': f'Relatório consolidado gerado com sucesso'
+                'message': f'Relatório consolidado gerado com sucesso',
+                'mode': presentation_mode
             }
             
         except Exception as e:
@@ -750,9 +1084,188 @@ class ConsolidatedPDFGenerator:
                 'error': f'Erro ao gerar PDF: {str(e)}'
             }
     
+    def _add_period_summary(self, story, structured_data):
+        """Adiciona resumo agregado do período para relatórios longos"""
+        story.append(Paragraph("3. Resumo do Período", self.styles['SectionTitle']))
+        story.append(Paragraph(
+            "Análise agregada do desempenho durante o período analisado:",
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 10))
+        
+        # Adiciona estatísticas agregadas
+        story.append(Paragraph(
+            "• Dados consolidados para otimizar apresentação de longos períodos",
+            self.styles['ObservationStyle']
+        ))
+        story.append(Spacer(1, 15))
+    
+    def _add_periods_with_vehicles_balanced(self, story, structured_data):
+        """Adiciona períodos operacionais com agrupamento balanceado para períodos médios"""
+        story.append(Paragraph("3. Desempenho por Período Operacional", self.styles['SectionTitle']))
+        story.append(Paragraph(
+            "Dados agrupados por períodos operacionais para melhor visualização:",
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 10))
+        
+        # Reutiliza a lógica existente mas com menos detalhamento
+        self._add_periods_with_vehicles(story, structured_data)
+    
+    def _add_periods_aggregated(self, story, structured_data: Dict):
+        """Exibe apenas dados gerais do período por horários operacionais, sem detalhamento por dia."""
+        story.append(Paragraph("3. Desempenho por Horário Operacional (Agregado)", self.styles['SectionTitle']))
+        story.append(Paragraph(
+            "Totais do período agrupados por horário operacional:",
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 8))
+        
+        periodos_diarios = structured_data.get('periodos_diarios', {}) or {}
+        aggregated: Dict[str, Dict] = {}
+        
+        for dia_str, periodos_do_dia in periodos_diarios.items():
+            for nome_periodo, periodo_data in periodos_do_dia.items():
+                info = periodo_data.get('info', {})
+                if nome_periodo not in aggregated:
+                    aggregated[nome_periodo] = {
+                        'horario': info.get('horario', ''),
+                        'km_total': 0.0,
+                        'comb_total': 0.0,
+                        'vel_max': 0.0,
+                    }
+                for v in periodo_data.get('veiculos', []):
+                    try:
+                        aggregated[nome_periodo]['km_total'] += float(v.get('km_periodo', 0) or 0)
+                        aggregated[nome_periodo]['comb_total'] += float(v.get('combustivel_periodo', 0) or 0)
+                        aggregated[nome_periodo]['vel_max'] = max(
+                            aggregated[nome_periodo]['vel_max'], float(v.get('vel_max_periodo', 0) or 0)
+                        )
+                    except Exception:
+                        pass
+        
+        if not aggregated:
+            story.append(Paragraph("Nenhum dado agregado disponível para os horários.", self.styles['ObservationStyle']))
+            story.append(Spacer(1, 10))
+            return
+        
+        period_priority = {
+            'Manhã Operacional': 1,
+            'Meio-dia Operacional': 2,
+            'Tarde Operacional': 3,
+            'Fora Horário Manhã': 4,
+            'Fora Horário Tarde': 5,
+            'Fora Horário Noite': 6,
+            'Final de Semana': 7,
+        }
+        ordered = sorted(aggregated.items(), key=lambda kv: period_priority.get(kv[0], 99))
+        
+        table_data = [['Período', 'Janela', 'Km Total', 'Comb. Total (L)', 'Vel. Máx. (km/h)']]
+        for nome, item in ordered:
+            table_data.append([
+                nome,
+                item.get('horario', ''),
+                self._format_distance(item.get('km_total', 0.0), decimals=1),
+                f"{item.get('comb_total', 0.0):.1f}",
+                f"{item.get('vel_max', 0.0):.0f}",
+            ])
+        
+        table = Table(table_data, colWidths=[2.2*inch, 1.4*inch, 1.2*inch, 1.3*inch, 1.2*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F4F6F7')),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ALIGN', (2, 1), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),
+        ]))
+        story.append(table)
+        story.append(Spacer(1, 12))
+    
+    def _add_weekly_performance_charts(self, story, structured_data: Dict):
+        """Adiciona gráficos de desempenho semanal por mês usando dados reais de por_dia."""
+        story.append(Paragraph("4. Desempenho Semanal por Mês", self.styles['SectionTitle']))
+        story.append(Paragraph(
+            "Quilometragem semanal agregada por semana ISO no(s) mês(es) cobertos:",
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 8))
+        
+        por_dia = structured_data.get('por_dia', {}) or {}
+        if not por_dia:
+            story.append(Paragraph("Sem dados diários para consolidar semanas.", self.styles['ObservationStyle']))
+            story.append(Spacer(1, 10))
+            return
+        
+        # Soma km por dia (agregando todos os veículos do dia)
+        daily_totals: Dict[str, float] = {}
+        for date_str, vehicles in por_dia.items():
+            try:
+                daily_totals[date_str] = sum(float(v.get('km_dia', 0) or 0) for v in vehicles)
+            except Exception:
+                daily_totals[date_str] = 0.0
+        
+        from collections import defaultdict
+        monthly_weeks = defaultdict(lambda: defaultdict(float))  # {YYYY-MM: {week: km_total}}
+        for date_str, km_val in daily_totals.items():
+            try:
+                dt = datetime.strptime(date_str, '%Y-%m-%d')
+            except Exception:
+                continue
+            month_key = dt.strftime('%Y-%m')
+            week_num = dt.isocalendar()[1]
+            monthly_weeks[month_key][week_num] += km_val
+        
+        if not monthly_weeks:
+            story.append(Paragraph("Sem dados suficientes para gráficos semanais.", self.styles['ObservationStyle']))
+            story.append(Spacer(1, 10))
+            return
+        
+        for month_key in sorted(monthly_weeks.keys()):
+            weeks = sorted(monthly_weeks[month_key].keys())
+            values = [monthly_weeks[month_key][w] for w in weeks]
+            labels = [f"Sem {w}" for w in weeks]
+            
+            story.append(Paragraph(f"Mês: {month_key}", self.styles['SubsectionTitle']))
+            drawing = Drawing(500, 250)
+            chart = VerticalBarChart()
+            chart.x = 50
+            chart.y = 40
+            chart.height = 170
+            chart.width = 400
+            chart.data = [values]
+            chart.categoryAxis.categoryNames = labels
+            chart.barWidth = 14
+            chart.groupSpacing = 6
+            chart.valueAxis.valueMin = 0
+            chart.valueAxis.labels.fontSize = 8
+            chart.categoryAxis.labels.fontSize = 8
+            chart.bars[0].fillColor = colors.HexColor('#2E86AB')
+            chart.valueAxis.strokeColor = colors.HexColor('#95A5A6')
+            chart.categoryAxis.strokeColor = colors.HexColor('#95A5A6')
+            drawing.add(String(50, 220, 'Quilometragem semanal (km)', fontName='Helvetica', fontSize=10, fillColor=colors.HexColor('#34495E')))
+            drawing.add(chart)
+            story.append(drawing)
+            story.append(Spacer(1, 10))
+    
     def _add_general_summary(self, story, structured_data, total_km, total_fuel):
         """Adiciona resumo geral com métricas principais focado no cliente"""
-        story.append(Paragraph("1. Dados Gerais do Período", self.styles['SectionTitle']))
+        # Não adiciona PageBreak aqui - deixa fluir naturalmente após o header
+        
+        # Título adaptativo baseado no tipo de relatório
+        vehicle_count = structured_data['resumo_geral']['total_veiculos']
+        if vehicle_count == 1:
+            section_title = "1. Dados Gerais do Veículo"
+        else:
+            section_title = "1. Dados Gerais do Período"
+            
+        story.append(Paragraph(section_title, self.styles['SectionTitle']))
         
         resumo = structured_data['resumo_geral']
         cliente_info = structured_data['cliente_info']
@@ -760,10 +1273,10 @@ class ConsolidatedPDFGenerator:
         summary_data = [
             ['Métrica', 'Valor'],
             ['Total de Veículos', f"{resumo['total_veiculos']}"],
-            ['Quilometragem Total', f"{total_km:,.1f} km"],
+            ['Quilometragem Total', self._format_distance(total_km, decimals=1)],
             ['Combustível Total Estimado', f"{total_fuel:,.1f} L"],
-            ['Média por Veículo', f"{resumo['media_por_veiculo']:,.1f} km"],
-            ['Velocidade Máxima da Frota', f"{resumo['vel_maxima_frota']:.0f} km/h"]
+            ['Média por Veículo', self._format_distance(resumo['media_por_veiculo'], decimals=1)],
+            ['Velocidade Máxima da Frota', format_speed(resumo.get('vel_maxima_frota', 0), total_km, include_unit=True, decimals=0)]
         ]
         
         # Adiciona informações específicas do cliente se disponível
@@ -785,14 +1298,31 @@ class ConsolidatedPDFGenerator:
             ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção completa de quebras na tabela
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),
         ]))
         
+        # Manter título e tabela juntos, mas sem envolver em KeepTogether para maior flexibilidade
         story.append(summary_table)
-        story.append(Spacer(1, 30))
+        story.append(Spacer(1, 20))  # Espaçamento reduzido
     
     def _add_period_performance_table(self, story, structured_data):
         """Adiciona tabela geral consolidada do período com métricas da frota"""
-        story.append(Paragraph("2. Desempenho Geral no Período", self.styles['SectionTitle']))
+        # Só adiciona PageBreak se a seção anterior for muito grande
+        # Deixa o ReportLab decidir naturalmente quando quebrar
+        
+        # Título adaptativo baseado no tipo de relatório
+        vehicle_count = structured_data['resumo_geral']['total_veiculos']
+        if vehicle_count == 1:
+            section_title = "2. Desempenho do Veículo"
+            description = "Dados consolidados do veículo no período:"
+        else:
+            section_title = "2. Desempenho Geral no Período"
+            description = "Tabela consolidada com dados gerais de todos os veículos no período:"
+            
+        story.append(Paragraph(section_title, self.styles['SectionTitle']))
         
         desempenho_periodo = structured_data.get('desempenho_periodo', [])
         
@@ -812,8 +1342,8 @@ class ConsolidatedPDFGenerator:
         for vehicle in desempenho_periodo:
             table_data.append([
                 vehicle['placa'],
-                f"{vehicle['km_total']:,.0f}",
-                f"{vehicle['velocidade_maxima']:.0f}",
+                self._format_distance(vehicle['km_total'], decimals=0),
+                format_speed(vehicle.get('velocidade_maxima', 0), vehicle.get('km_total', 0), include_unit=False, decimals=0),
                 f"{vehicle['combustivel']:.1f}",
                 f"{vehicle['eficiencia']:.1f}"
             ])
@@ -829,20 +1359,40 @@ class ConsolidatedPDFGenerator:
             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção completa de quebras na tabela
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),
         ]))
         
+        # Manter seção mais compacta - usar KeepTogether apenas para conteúdo crítico
+        story.append(Paragraph(
+            description,
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 8))
         story.append(period_table)
-        story.append(Spacer(1, 30))
+        story.append(Spacer(1, 20))  # Espaçamento reduzido
     
     def _add_periods_with_vehicles(self, story, structured_data):
         """Adiciona períodos operacionais organizados POR DIA (nova estrutura)"""
-        story.append(Paragraph("3. Desempenho Diário por Horário Operacional", self.styles['SectionTitle']))
+        # Usar quebra inteligente apenas para esta seção complexa
+        self._add_smart_break_if_needed(story, 200)
+        
+        # Título adaptativo baseado no tipo de relatório
+        vehicle_count = structured_data['resumo_geral']['total_veiculos']
+        if vehicle_count == 1:
+            section_title = "3. Desempenho Diário por Horário"
+        else:
+            section_title = "3. Desempenho Diário por Horário Operacional"
+            
+        story.append(Paragraph(section_title, self.styles['SectionTitle']))
         
         story.append(Paragraph(
             "Dados organizados dia a dia com detalhamento por período operacional:",
             self.styles['Normal']
         ))
-        story.append(Spacer(1, 15))
+        story.append(Spacer(1, 10))  # Espaçamento reduzido
         
         # Use nova estrutura diária
         periodos_diarios = structured_data.get('periodos_diarios', {})
@@ -925,8 +1475,8 @@ class ConsolidatedPDFGenerator:
                         for vehicle in vehicles_list:
                             vehicle_data.append([
                                 vehicle['placa'],
-                                f"{vehicle['km_periodo']:.0f}",
-                                f"{vehicle['vel_max_periodo']:.0f}",
+                                self._format_distance(vehicle['km_periodo'], decimals=0),
+                                format_speed(vehicle.get('vel_max_periodo', 0), vehicle.get('km_periodo', 0), include_unit=False, decimals=0),
                                 f"{vehicle['combustivel_periodo']:.1f}"
                             ])
                         
@@ -941,6 +1491,10 @@ class ConsolidatedPDFGenerator:
                             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
                             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
                             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                            # Prevenção completa de quebras na tabela
+                            ('NOSPLIT', (0, 0), (-1, -1)),
+                            ('WORDWRAP', (0, 0), (-1, -1)),
+                            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),
                         ]))
                         
                         story.append(vehicles_table)
@@ -949,7 +1503,14 @@ class ConsolidatedPDFGenerator:
                 # Dias individuais (ou final de semana incompleto)
                 for dia_str, periodos_do_dia, data_obj in group:
                     if data_obj.weekday() >= 5:  # É weekend mas só um dia
-                        weekend_title = f"Final de Semana ({data_obj.strftime('%d/%m/%Y')})"
+                        # Exibe o intervalo completo de Sábado + Domingo, mesmo que apenas um dia tenha dados
+                        if data_obj.weekday() == 5:  # Sábado
+                            sabado = data_obj
+                            domingo = data_obj + timedelta(days=1)
+                        else:  # Domingo
+                            domingo = data_obj
+                            sabado = data_obj - timedelta(days=1)
+                        weekend_title = f"Final de Semana ({sabado.strftime('%d/%m/%Y')} + {domingo.strftime('%d/%m/%Y')})"
                         story.append(Paragraph(f"<b>{weekend_title}</b>", self.styles['SubsectionTitle']))
                     else:
                         # Título do dia normal
@@ -966,10 +1527,7 @@ class ConsolidatedPDFGenerator:
                         if not vehicles_list:
                             continue
                         
-                        periodo_title = f"{nome_periodo} ({period_info['horario']})"
-                        story.append(Paragraph(periodo_title, self.styles['Normal']))
-                        story.append(Spacer(1, 5))
-                        
+                        período_title = f"{nome_periodo} ({period_info['horario']})"
                         period_color = color_map.get(period_info['cor'], colors.HexColor('#95A5A6'))
                         
                         # Tabela SEM coluna cliente - colunas essenciais
@@ -978,8 +1536,8 @@ class ConsolidatedPDFGenerator:
                         for vehicle in vehicles_list:
                             vehicle_data.append([
                                 vehicle['placa'],
-                                f"{vehicle['km_periodo']:.0f}",
-                                f"{vehicle['vel_max_periodo']:.0f}",
+                                self._format_distance(vehicle['km_periodo'], decimals=0),
+                                format_speed(vehicle.get('vel_max_periodo', 0), vehicle.get('km_periodo', 0), include_unit=False, decimals=0),
                                 f"{vehicle['combustivel_periodo']:.1f}"
                             ])
                         
@@ -994,21 +1552,31 @@ class ConsolidatedPDFGenerator:
                             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
                             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
                             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                            # Prevenção completa de quebras na tabela
+                            ('NOSPLIT', (0, 0), (-1, -1)),
+                            ('WORDWRAP', (0, 0), (-1, -1)),
+                            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),
                         ]))
                         
-                        story.append(vehicles_table)
-                        story.append(Spacer(1, 10))
+                        # Usar KeepTogether apenas para períodos individuais, não seções inteiras
+                        period_content = [
+                            Paragraph(período_title, self.styles['Normal']),
+                            Spacer(1, 3),  # Espaçamento reduzido
+                            vehicles_table
+                        ]
+                        story.append(KeepTogether(period_content))
+                        story.append(Spacer(1, 8))  # Espaçamento reduzido entre períodos
             
-            story.append(Spacer(1, 15))  # Espaço entre grupos
+            story.append(Spacer(1, 12))  # Espaço reduzido entre grupos
         
         if len(periodos_diarios) > 7:
             story.append(Paragraph(f"<i>Nota: Exibindo os 7 dias mais recentes. Total de {len(periodos_diarios)} dias disponíveis.</i>", self.styles['ObservationStyle']))
         
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 15))  # Espaçamento final reduzido
     
     def _add_performance_rankings(self, story, structured_data):
         """Adiciona ranking único estilo campeonato (classificação)"""
-        story.append(Paragraph("4. Ranking de Desempenho Custo/Benefício", self.styles['SectionTitle']))
+        # Não forçar PageBreak - deixar o sistema decidir naturalmente
         
         # Usa o novo ranking campeonato
         ranking_campeonato = structured_data.get('ranking_campeonato', {})
@@ -1017,8 +1585,16 @@ class ConsolidatedPDFGenerator:
             story.append(Paragraph("Nenhum dado de ranking disponível.", self.styles['Normal']))
             return
         
-        story.append(Paragraph(ranking_campeonato.get('titulo', 'Rankings'), self.styles['SubsectionTitle']))
-        story.append(Paragraph(f"<i>{ranking_campeonato.get('descricao', '')}</i>", self.styles['Normal']))
+        # Título adaptativo baseado no tipo de relatório
+        vehicle_count = structured_data['resumo_geral']['total_veiculos']
+        if vehicle_count == 1:
+            # Para veículo individual, não mostra ranking (não faz sentido comparar consigo mesmo)
+            return
+        else:
+            section_title = "4. Ranking de Desempenho Custo/Benefício"
+        
+        story.append(Paragraph(escape(str(ranking_campeonato.get('titulo', 'Rankings'))), self.styles['SubsectionTitle']))
+        story.append(Paragraph(f"<i>{escape(str(ranking_campeonato.get('descricao', '')))}</i>", self.styles['Normal']))
         story.append(Spacer(1, 10))
         
         # Tabela única estilo campeonato
@@ -1030,15 +1606,15 @@ class ConsolidatedPDFGenerator:
             ranking_data.append([
                 f"{posicao}º",
                 vehicle['placa'],
-                f"{vehicle['km_total']:,.0f}",
+                self._format_distance(vehicle['km_total'], decimals=0),
                 f"{vehicle['combustivel']:.1f}L",  # Mostra combustível em litros
-                f"{vehicle['velocidade_maxima']:.0f}",
+                format_speed(vehicle.get('velocidade_maxima', 0), vehicle.get('km_total', 0), include_unit=False, decimals=0),
                 f"{vehicle['score_custo_beneficio']:.2f}"
             ])
         
         ranking_table = Table(ranking_data, colWidths=[0.8*inch, 1*inch, 1*inch, 1*inch, 1*inch, 1*inch])
         
-        # Estilo da tabela com cores para top 3 e bottom 3
+        # Estilo da tabela com cores para top 3 e bottom 3 + prevenção de quebras
         table_style = [
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2C3E50')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -1048,6 +1624,11 @@ class ConsolidatedPDFGenerator:
             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção de quebras e cortes
+            ('NOSPLIT', (0, 0), (-1, -1)),  # Evita quebrar tabela no meio
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')]),
+            ('WORDWRAP', (0, 0), (-1, -1)),  # Quebra palavras longas
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True),  # Divide palavras muito longas
         ]
         
         # Aplica cores: verde para top 3, vermelho para bottom 3
@@ -1069,8 +1650,13 @@ class ConsolidatedPDFGenerator:
         
         ranking_table.setStyle(TableStyle(table_style))
         
+        # Organizar ranking de forma mais compacta - remover KeepTogether excessivo
+        story.append(Paragraph(section_title, self.styles['SectionTitle']))
+        story.append(Paragraph(escape(str(ranking_campeonato.get('titulo', 'Rankings'))), self.styles['SubsectionTitle']))
+        story.append(Paragraph(f"<i>{escape(str(ranking_campeonato.get('descrição', '')))}</i>", self.styles['Normal']))
+        story.append(Spacer(1, 8))
         story.append(ranking_table)
-        story.append(Spacer(1, 15))
+        story.append(Spacer(1, 12))  # Espaçamento reduzido
         
         # Legenda das cores
         legend_text = [
@@ -1086,7 +1672,7 @@ class ConsolidatedPDFGenerator:
             else:
                 story.append(Paragraph(legend, self.styles['ObservationStyle']))
         
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 15))  # Espaçamento reduzido após legenda
     
     def _create_cost_benefit_ranking_table(self, story, ranking, header_color, bg_color):
         """Cria tabela de ranking custo/benefício sem coluna cliente"""
@@ -1095,9 +1681,9 @@ class ConsolidatedPDFGenerator:
         criterio = ranking['criterio']
         descricao = ranking.get('descricao', '')
         
-        story.append(Paragraph(f"<b>{categoria}:</b>", self.styles['Normal']))
+        story.append(Paragraph(f"<b>{escape(str(categoria))}:</b>", self.styles['Normal']))
         if descricao:
-            story.append(Paragraph(f"<i>{descricao}</i>", self.styles['ObservationStyle']))
+            story.append(Paragraph(f"<i>{escape(str(descricao))}</i>", self.styles['ObservationStyle']))
         
         ranking_data = [['Posição', 'Placa', 'Km', 'Combustível', 'Vel. Máx.', 'Score C/B']]
         
@@ -1110,9 +1696,9 @@ class ConsolidatedPDFGenerator:
             ranking_data.append([
                 f"{i}º",
                 vehicle['placa'],
-                f"{vehicle['km_total']:,.0f}",
+                self._format_distance(vehicle['km_total'], decimals=0),
                 f"{vehicle['combustivel']:.1f}L",  # Mostra combustível em litros
-                f"{vehicle['velocidade_maxima']:.0f}",
+                format_speed(vehicle.get('velocidade_maxima', 0), vehicle.get('km_total', 0), include_unit=False, decimals=0),
                 score_value
             ])
         
@@ -1127,6 +1713,10 @@ class ConsolidatedPDFGenerator:
             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(ranking_table)
@@ -1142,7 +1732,7 @@ class ConsolidatedPDFGenerator:
         ranking_data = [['Posição', 'Placa', 'Cliente', 'Valor']]
         for i, vehicle in enumerate(veiculos, 1):
             if criterio == 'km_total':
-                valor = f"{vehicle['km_total']:,.1f} km"
+                valor = self._format_distance(vehicle['km_total'], decimals=1)
             elif criterio == 'eficiencia':
                 valor = f"{vehicle['eficiencia']:.1f} km/L"
             else:
@@ -1164,6 +1754,10 @@ class ConsolidatedPDFGenerator:
             ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
         story.append(ranking_table)
@@ -1171,7 +1765,7 @@ class ConsolidatedPDFGenerator:
     
     def _add_daily_performance(self, story, structured_data):
         """Adiciona desempenho diário da frota sem coluna cliente"""
-        story.append(Paragraph("5. Detalhamento por Dia", self.styles['SectionTitle']))
+        # Remover PageBreak forçado - permitir fluxo natural
         
         por_dia = structured_data['por_dia']
         if not por_dia:
@@ -1223,7 +1817,7 @@ class ConsolidatedPDFGenerator:
                 daily_data.append([
                     f"{saturday_formatted} + {sunday_formatted}",  # Final de semana
                     str(num_vehicles_weekend),
-                    f"{total_km_weekend:,.0f}",
+                    self._format_distance(total_km_weekend, decimals=0),
                     f"{total_fuel_weekend:.1f}"
                 ])
                 
@@ -1240,17 +1834,25 @@ class ConsolidatedPDFGenerator:
                 daily_data.append([
                     date_obj.strftime('%d/%m/%Y'),
                     str(num_vehicles),
-                    f"{total_km_day:,.0f}",
+                    self._format_distance(total_km_day, decimals=0),
                     f"{total_fuel_day:.1f}"
                 ])
                 
                 processed_dates.add(date_str)
         
-        # Limita a 10 dias mais recentes para não sobrecarregar o PDF
+        story.append(Paragraph("5. Detalhamento por Dia", self.styles['SectionTitle']))
+        story.append(Paragraph(
+            "Desempenho diário com dados resumidos de todos os veículos:",
+            self.styles['Normal']
+        ))
+        story.append(Spacer(1, 8))  # Espaçamento reduzido
+        
         if len(daily_data) > 11:  # 1 header + 10 days
             daily_data = [daily_data[0]] + daily_data[-10:]
             story.append(Paragraph("<i>Mostrando os 10 dias mais recentes</i>", self.styles['ObservationStyle']))
+            story.append(Spacer(1, 5))
         
+        # Cria a tabela diária com estilo completo
         daily_table = Table(daily_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
         daily_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495E')),
@@ -1262,13 +1864,20 @@ class ConsolidatedPDFGenerator:
             ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Prevenção de quebras
+            ('NOSPLIT', (0, 0), (-1, -1)),
+            ('WORDWRAP', (0, 0), (-1, -1)),
+            ('SPLITLONGWORDS', (0, 0), (-1, -1), True)
         ]))
         
+        # Usar estrutura mais simples sem KeepTogether excessivo
         story.append(daily_table)
-        story.append(Spacer(1, 30))
+        story.append(Spacer(1, 20))  # Espaçamento reduzido
     
     def _add_footer_observations(self, story):
         """Adiciona observações e metodologia no rodapé"""
+        # Só adicionar PageBreak se realmente necessário
+        # Deixar o sistema decidir automaticamente
         story.append(Paragraph("6. Observações e Metodologia", self.styles['SectionTitle']))
         
         observations = [

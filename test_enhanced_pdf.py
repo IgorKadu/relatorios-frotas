@@ -65,7 +65,7 @@ def create_mock_data():
         # NOVO RANKING: Único estilo campeonato
         "ranking_campeonato": {
             "titulo": "Ranking de Desempenho Custo/Benefício",
-            "descricao": "Classificação geral baseada em quilometragem (40%) + eficiência (40%) + controle de velocidade (20%)",
+            "descricao": "Classificação geral baseada em quilometragem (40%) + combustível (40%) + controle de velocidade (20%)",
             "veiculos": [
                 {
                     "posicao_ranking": 1,

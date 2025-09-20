@@ -19,6 +19,26 @@ from folium import plugins
 import base64
 from io import BytesIO
 
+# ==============================
+# LOGGING E FEATURE FLAGS GLOBAIS
+# ==============================
+import logging
+
+# Logger padronizado do módulo (evita NameError e facilita auditoria)
+logger = logging.getLogger("relatorios_frotas.services")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter(
+        fmt='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+    ))
+    logger.addHandler(_handler)
+logger.setLevel(logging.INFO)
+
+# Flag de feature para cálculo de KM consistente
+# True  -> soma KM apenas quando há incremento de odômetro e velocidade > 0
+# False -> comportamento legado (soma todo incremento de odômetro)
+CONSISTENT_SPEED_KM_ONLY = True
+
 from .models import Cliente, Veiculo, PosicaoHistorica, get_session
 from .utils import get_fuel_consumption_estimate
 
@@ -42,12 +62,20 @@ class TelemetryAnalyzer:
         Busca dados de um veículo em um período específico
         """
         try:
+            # Handle same day periods - when start and end date are the same, 
+            # adjust end date to include the entire day
+            if data_inicio.date() == data_fim.date():
+                # For same day, set end time to end of day (23:59:59)
+                adjusted_data_fim = data_fim.replace(hour=23, minute=59, second=59, microsecond=999999)
+            else:
+                adjusted_data_fim = data_fim
+            
             # Query para buscar dados
             query = self.session.query(PosicaoHistorica).join(Veiculo).filter(
                 and_(
                     Veiculo.placa == placa,
                     PosicaoHistorica.data_evento >= data_inicio,
-                    PosicaoHistorica.data_evento <= data_fim
+                    PosicaoHistorica.data_evento <= adjusted_data_fim
                 )
             ).order_by(PosicaoHistorica.data_evento)
             
@@ -119,6 +147,68 @@ class TelemetryAnalyzer:
         veiculo = self.session.query(Veiculo).filter_by(placa=placa).first()
         cliente = veiculo.cliente if veiculo else None
         
+        # Garantir tipos numéricos corretos
+        df = df.copy()
+        df['velocidade_kmh'] = pd.to_numeric(df['velocidade_kmh'], errors='coerce').fillna(0.0)
+        df['odometro_periodo_km'] = pd.to_numeric(df['odometro_periodo_km'], errors='coerce').fillna(0.0)
+        
+        # Flags de estado
+        df['em_movimento'] = df.get('em_movimento', df['velocidade_kmh'] > 0)
+        df['ligado'] = df.get('ligado', df['ignicao'].isin(['L', 'LP', 'LM']))
+        
+        # Cálculo robusto de quilometragem: soma dos incrementos positivos do odômetro
+        odom_diff = df['odometro_periodo_km'].diff().fillna(0).clip(lower=0)
+        
+        # Consistência: considerar deslocamento apenas quando há incremento de odômetro E velocidade > 0
+        valid_displacement_mask = (odom_diff > 0) & (df['velocidade_kmh'] > 0)
+        
+        # Seleciona estratégia pelo feature flag
+        if CONSISTENT_SPEED_KM_ONLY:
+            km_total_calc = float(odom_diff[valid_displacement_mask].sum())
+            vel_validas = df.loc[valid_displacement_mask, 'velocidade_kmh']
+        else:
+            # Modo legado: considera todos os incrementos de odômetro
+            km_total_calc = float(odom_diff.sum())
+            vel_validas = df['velocidade_kmh']
+        
+        velocidade_maxima_calc = float(vel_validas.max()) if not vel_validas.empty else 0.0
+        velocidade_media_calc = float(vel_validas.mean()) if not vel_validas.empty else 0.0
+        
+        # Métricas de consistência para auditoria/observabilidade
+        inconsistentes_km = int(((odom_diff > 0) & (df['velocidade_kmh'] <= 0)).sum())
+        velocidades_sem_km = int(((df['velocidade_kmh'] > 0) & ~(odom_diff > 0)).sum())
+        total_registros = int(len(df))
+        deslocamentos_consistentes = int(valid_displacement_mask.sum())
+        deslocamentos_totais = int((odom_diff > 0).sum())
+        
+        # Log estruturado
+        try:
+            logger.info({
+                'event': 'summary_metrics_computed',
+                'placa': placa,
+                'periodo': {
+                    'inicio': str(df['data_evento'].min()),
+                    'fim': str(df['data_evento'].max())
+                },
+                'flags': {
+                    'CONSISTENT_SPEED_KM_ONLY': CONSISTENT_SPEED_KM_ONLY
+                },
+                'counters': {
+                    'total_registros': total_registros,
+                    'deslocamentos_totais': deslocamentos_totais,
+                    'deslocamentos_consistentes': deslocamentos_consistentes,
+                    'inconsistentes_km': inconsistentes_km,
+                    'velocidades_sem_km': velocidades_sem_km
+                },
+                'metrics_preview': {
+                    'km_total': round(km_total_calc, 3),
+                    'velocidade_maxima': round(velocidade_maxima_calc, 2),
+                    'velocidade_media': round(velocidade_media_calc, 2)
+                }
+            })
+        except Exception:
+            pass
+        
         metrics = {
             'veiculo': {
                 'placa': placa,
@@ -130,41 +220,53 @@ class TelemetryAnalyzer:
                 }
             },
             'operacao': {
-                'total_registros': len(df),
-                'km_total': df['odometro_periodo_km'].max() - df['odometro_periodo_km'].min() if len(df) > 0 else 0,
-                'velocidade_maxima': df['velocidade_kmh'].max(),
-                'velocidade_media': df[df['velocidade_kmh'] > 0]['velocidade_kmh'].mean(),
-                'tempo_total_ligado': len(df[df['ligado']]),
-                'tempo_em_movimento': len(df[df['em_movimento']]),
-                'tempo_parado_ligado': len(df[(df['ligado']) & (~df['em_movimento'])]),
-                'tempo_desligado': len(df[~df['ligado']])
+                'total_registros': total_registros,
+                'km_total': km_total_calc,
+                'velocidade_maxima': velocidade_maxima_calc if km_total_calc > 0 else 0.0,
+                'velocidade_media': velocidade_media_calc if km_total_calc > 0 else 0.0,
+                'tempo_total_ligado': int(len(df[df['ligado']])),
+                'tempo_em_movimento': int(len(df[df['em_movimento']])),
+                # Tempo em movimento apenas em trechos consistentes
+                'tempo_em_movimento_consistente': int(valid_displacement_mask.sum()),
+                'tempo_parado_ligado': int(len(df[(df['ligado']) & (~df['em_movimento'])])),
+                'tempo_desligado': int(len(df[~df['ligado']]))
             },
             'periodos': {
                 # Horários Operacionais detalhados
-                'operacional_manha': len(df[df['periodo_operacional'] == 'operacional_manha']),
-                'operacional_meio_dia': len(df[df['periodo_operacional'] == 'operacional_meio_dia']),
-                'operacional_tarde': len(df[df['periodo_operacional'] == 'operacional_tarde']),
+                'operacional_manha': int(len(df[df['periodo_operacional'] == 'operacional_manha'])),
+                'operacional_meio_dia': int(len(df[df['periodo_operacional'] == 'operacional_meio_dia'])),
+                'operacional_tarde': int(len(df[df['periodo_operacional'] == 'operacional_tarde'])),
                 
                 # Fora de Horário Operacional detalhados
-                'fora_horario_manha': len(df[df['periodo_operacional'] == 'fora_horario_manha']),
-                'fora_horario_tarde': len(df[df['periodo_operacional'] == 'fora_horario_tarde']),
-                'fora_horario_noite': len(df[df['periodo_operacional'] == 'fora_horario_noite']),
+                'fora_horario_manha': int(len(df[df['periodo_operacional'] == 'fora_horario_manha'])),
+                'fora_horario_tarde': int(len(df[df['periodo_operacional'] == 'fora_horario_tarde'])),
+                'fora_horario_noite': int(len(df[df['periodo_operacional'] == 'fora_horario_noite'])),
                 
                 # Final de Semana
-                'final_semana': len(df[df['periodo_operacional'] == 'final_semana']),
+                'final_semana': int(len(df[df['periodo_operacional'] == 'final_semana'])),
                 
                 # Totais calculados
-                'total_operacional': len(df[df['periodo_operacional'].isin(['operacional_manha', 'operacional_meio_dia', 'operacional_tarde'])]),
-                'total_fora_horario': len(df[df['periodo_operacional'].isin(['fora_horario_manha', 'fora_horario_tarde', 'fora_horario_noite'])]),
+                'total_operacional': int(len(df[df['periodo_operacional'].isin(['operacional_manha', 'operacional_meio_dia', 'operacional_tarde'])])),
+                'total_fora_horario': int(len(df[df['periodo_operacional'].isin(['fora_horario_manha', 'fora_horario_tarde', 'fora_horario_noite'])])),
             },
             'conectividade': {
-                'gps_ok': df['gps_status'].sum(),
-                'gprs_ok': df['gprs_status'].sum(),
-                'problemas_conexao': len(df) - min(df['gps_status'].sum(), df['gprs_status'].sum())
+                'gps_ok': int(df['gps_status'].sum()),
+                'gprs_ok': int(df['gprs_status'].sum()),
+                'problemas_conexao': int(len(df) - min(df['gps_status'].sum(), df['gprs_status'].sum()))
+            },
+            'observabilidade': {
+                'consistencia': {
+                    'CONSISTENT_SPEED_KM_ONLY': CONSISTENT_SPEED_KM_ONLY,
+                    'total_registros': total_registros,
+                    'deslocamentos_totais': deslocamentos_totais,
+                    'deslocamentos_consistentes': deslocamentos_consistentes,
+                    'inconsistentes_km': inconsistentes_km,
+                    'velocidades_sem_km': velocidades_sem_km
+                }
             }
         }
         
-        # Estimativa de combustível
+        # Estimativa de combustível (derivada) – manter apenas como estimativa e não usar para "corrigir" km
         if metrics['operacao']['km_total'] > 0:
             fuel_data = get_fuel_consumption_estimate(
                 metrics['operacao']['km_total'],
@@ -175,13 +277,18 @@ class TelemetryAnalyzer:
         
         # Eventos especiais
         eventos_especiais = df[df['tipo_evento'].str.contains('Excesso|Violado|Bloq', na=False, case=False)]
+        tipos_eventos_dict = {}
+        if not eventos_especiais.empty:
+            tipos_series = pd.Series(eventos_especiais['tipo_evento'])
+            tipos_eventos_dict = tipos_series.value_counts().to_dict()
+        
         metrics['eventos'] = {
-            'total_eventos_especiais': len(eventos_especiais),
-            'tipos_eventos': eventos_especiais['tipo_evento'].value_counts().to_dict() if not eventos_especiais.empty else {}
+            'total_eventos_especiais': int(len(eventos_especiais)),
+            'tipos_eventos': tipos_eventos_dict
         }
         
         return metrics
-    
+
     def create_speed_chart(self, df: pd.DataFrame) -> str:
         """
         Cria gráfico de velocidade ao longo do tempo
@@ -255,7 +362,7 @@ class TelemetryAnalyzer:
         }
         
         df_status = df.copy()
-        df_status['status_ignicao'] = df_status['ignicao'].astype(str).map(status_map)
+        df_status['status_ignicao'] = df_status['ignicao'].astype(str).replace(status_map)
         status_counts = df_status['status_ignicao'].value_counts()
         
         fig = go.Figure(data=[
@@ -279,7 +386,12 @@ class TelemetryAnalyzer:
         """
         Cria mapa interativo da rota percorrida
         """
-        if df.empty or df[['latitude', 'longitude']].isna().all().all():
+        if df.empty:
+            return "<p>Dados de localização não disponíveis para gerar mapa.</p>"
+        
+        # Check if all latitude and longitude values are NaN
+        lat_lon_data = df[['latitude', 'longitude']]
+        if lat_lon_data.isna().all().all():
             return "<p>Dados de localização não disponíveis para gerar mapa.</p>"
         
         # Remove registros sem coordenadas válidas
@@ -289,12 +401,12 @@ class TelemetryAnalyzer:
             return "<p>Dados de localização não disponíveis para gerar mapa.</p>"
         
         # Centro do mapa
-        center_lat = df_map['latitude'].mean()
-        center_lon = df_map['longitude'].mean()
+        center_lat = float(df_map['latitude'].mean())
+        center_lon = float(df_map['longitude'].mean())
         
         # Cria mapa
         m = folium.Map(
-            location=[center_lat, center_lon],
+            location=[float(center_lat), float(center_lon)],
             zoom_start=12,
             tiles='OpenStreetMap'
         )
@@ -344,7 +456,7 @@ class TelemetryAnalyzer:
         """
         Cria mapa detalhado de rotas com dados operacionais
         """
-        if df.empty or df[['latitude', 'longitude']].isna().all(axis=None):
+        if df.empty or df[['latitude', 'longitude']].isna().all().all():
             return "<p>Dados de localização não disponíveis para gerar mapa.</p>"
         
         # Remove registros sem coordenadas válidas
@@ -379,7 +491,7 @@ class TelemetryAnalyzer:
         for periodo, color in period_colors.items():
             periodo_data = df_map[df_map['periodo_operacional'] == periodo]
             if not periodo_data.empty:
-                coords = periodo_data[['latitude', 'longitude']].values.tolist()
+                coords = [[float(row['latitude']), float(row['longitude'])] for _, row in periodo_data.iterrows()]
                 if len(coords) > 1:
                     folium.PolyLine(
                         coords,
@@ -392,16 +504,16 @@ class TelemetryAnalyzer:
         # Adiciona pontos com informações detalhadas
         for idx, point in df_map.iterrows():
             periodo = point['periodo_operacional']
-            color = period_colors.get(periodo, 'gray')
+            color = period_colors.get(str(periodo), 'gray')
             
             # Popup com informações detalhadas
             popup_html = f"""
             <div style="width: 200px;">
-                <b>Data/Hora:</b> {point['data_evento'].strftime('%d/%m/%Y %H:%M')}<br>
+                <b>Data/Hora:</b> {pd.to_datetime(point['data_evento']).strftime('%d/%m/%Y %H:%M')}<br>
                 <b>Velocidade:</b> {point['velocidade_kmh']} km/h<br>
                 <b>Período:</b> {periodo}<br>
                 <b>Status:</b> {point['ignicao']}<br>
-                <b>Endereço:</b> {point.get('endereco', 'N/A')[:50]}...
+                <b>Endereço:</b> {str(point.get('endereco', 'N/A'))[:50]}...
             </div>
             """
             
@@ -435,7 +547,7 @@ class TelemetryAnalyzer:
         <p><span style="color:#dc3545">●</span> Final de Semana</p>
         </div>
         '''
-        m.get_root().html.add_child(folium.Element(legend_html))
+        m.get_root().add_child(folium.Element(legend_html))
         
         # Converte para HTML
         return m._repr_html_()
@@ -554,14 +666,32 @@ class ReportGenerator:
         # Gera métricas
         metrics = self.analyzer.generate_summary_metrics(df, placa)
         
-        # Gera gráficos
+        # Estatísticas diárias para gráficos/tabelas agregadas (consistentes)
+        df_daily = df.copy()
+        df_daily['date'] = df_daily['data_evento'].dt.date
+        df_daily['velocidade_kmh'] = pd.to_numeric(df_daily['velocidade_kmh'], errors='coerce').fillna(0.0)
+        df_daily['odometro_periodo_km'] = pd.to_numeric(df_daily['odometro_periodo_km'], errors='coerce').fillna(0.0)
+        daily_stats = []
+        for day, g in df_daily.groupby('date'):
+            # Ordena e calcula deltas de odômetro
+            g = g.sort_values('data_evento').copy()
+            diffs = g['odometro_periodo_km'].diff().fillna(0).clip(lower=0)
+            # Máscara de consistência: deslocou (delta odômetro > 0) e registrou velocidade > 0
+            valid = (diffs > 0) & (g['velocidade_kmh'] > 0)
+            # Apenas trechos consistentes entram na conta diária
+            km_day = float(diffs[valid].sum())
+            avg_speed_day = float(g.loc[valid, 'velocidade_kmh'].mean()) if valid.any() else 0.0
+            max_speed_day = float(g.loc[valid, 'velocidade_kmh'].max()) if valid.any() else 0.0
+            daily_stats.append({'date': day.isoformat(), 'km': km_day, 'avg_speed': avg_speed_day, 'max_speed': max_speed_day})
+
+        # Gera gráficos (HTML) existentes
         charts = {
             'speed_chart': self.analyzer.create_speed_chart(df),
             'periods_chart': self.analyzer.create_operational_periods_chart(df),
             'ignition_chart': self.analyzer.create_ignition_status_chart(df),
             'route_map': self.analyzer.create_route_map(df)
         }
-        
+
         # Gera análises especiais
         fuel_analysis = self.analyzer.create_fuel_consumption_analysis(metrics)
         insights = self.analyzer.generate_insights_and_recommendations(metrics)
@@ -572,27 +702,51 @@ class ReportGenerator:
             'charts': charts,
             'fuel_analysis': fuel_analysis,
             'insights': insights,
-            'data_count': len(df)
+            'data_count': int(len(df)),
+            'daily_stats': daily_stats
         }
 
-    def generate_consolidated_report(self, data_inicio: datetime, data_fim: datetime, cliente_nome: Optional[str] = None, reports_dir: Optional[str] = None) -> Dict:
+    def generate_consolidated_report(self, data_inicio: datetime, data_fim: datetime, cliente_nome: Optional[str] = None, reports_dir: Optional[str] = None, vehicle_filter: Optional[str] = None) -> Dict:
         """
         Gera relatório consolidado com foco no cliente e rankings custo/benefício
+        Suporta filtro por veículo individual para relatórios padronizados
         """
         try:
+            # Handle same day periods - when start and end date are the same, 
+            # adjust end date to include the entire day
+            if data_inicio.date() == data_fim.date():
+                # For same day, set end time to end of day (23:59:59)
+                adjusted_data_fim = data_fim.replace(hour=23, minute=59, second=59, microsecond=999999)
+            else:
+                adjusted_data_fim = data_fim
+            
             session = get_session()
             
-            # Filtra veículos por cliente se especificado
+            # Constrói consulta base
+            query = session.query(Veiculo).join(Cliente)
+            
+            # Filtra por cliente se especificado
             if cliente_nome and cliente_nome != 'TODOS':
-                vehicles = session.query(Veiculo).join(Cliente).filter(
-                    Cliente.nome.ilike(f"%{cliente_nome}%")
-                ).all()
+                query = query.filter(Cliente.nome.ilike(f"%{cliente_nome}%"))
                 cliente_obj = session.query(Cliente).filter(
                     Cliente.nome.ilike(f"%{cliente_nome}%")
                 ).first()
+            
+            # Filtra por veículo individual se especificado
+            if vehicle_filter:
+                query = query.filter(Veiculo.placa.ilike(f"%{vehicle_filter}%"))
+                vehicles = query.all()
+                if vehicles:
+                    cliente_obj = vehicles[0].cliente
+                else:
+                    session.close()
+                    return {
+                        'success': False,
+                        'error': f'Veículo {vehicle_filter} não encontrado no sistema'
+                    }
             else:
-                # Pega todos os veículos e detecta cliente automaticamente
-                vehicles = session.query(Veiculo).join(Cliente).all()
+                # Sem filtro de veículo - pega todos os veículos do cliente/sistema
+                vehicles = query.all()
                 if vehicles:
                     # Detecta cliente automaticamente do primeiro veículo com dados
                     cliente_obj = vehicles[0].cliente
@@ -646,8 +800,8 @@ class ReportGenerator:
             
             for vehicle in vehicles:
                 try:
-                    # Gera análise individual
-                    df = self.analyzer.get_vehicle_data(str(vehicle.placa), data_inicio, data_fim)
+                    # Gera análise individual using adjusted end date for same-day periods
+                    df = self.analyzer.get_vehicle_data(str(vehicle.placa), data_inicio, adjusted_data_fim)
                     
                     if df.empty:
                         continue
@@ -810,24 +964,22 @@ class ReportGenerator:
                         period_df = daily_df[daily_df['periodo_operacional'] == period_key]
                         
                         if not period_df.empty:
-                            # Calcula a quilometragem correta para o período
-                            if len(period_df) > 1:
-                                # Usa diferença entre odômetros para calcular km percorridos
-                                km_periodo = period_df['odometro_periodo_km'].max() - period_df['odometro_periodo_km'].min()
-                            else:
-                                # Para registros únicos, considera quilometragem proporcional
-                                km_periodo = vehicle_data['km_total'] * (len(period_df) / len(df)) if len(df) > 0 else 0
-                            
-                            # Garante que km_periodo não seja zero se há consumo de combustível
-                            combustivel_periodo_calc = vehicle_data['combustivel'] * (len(period_df) / len(df)) if len(df) > 0 else 0
-                            if km_periodo == 0 and combustivel_periodo_calc > 0:
-                                # Se há consumo mas km é zero, estima km baseado na eficiência média
-                                km_periodo = combustivel_periodo_calc * vehicle_data['eficiencia']
-                            
+                            # Calcula métricas consistentes para o período: considerar apenas trechos com
+                            # incremento de odômetro (> 0) e velocidade > 0
+                            period_df_sorted = period_df.sort_values('data_evento').copy()
+                            period_df_sorted['velocidade_kmh'] = pd.to_numeric(period_df_sorted['velocidade_kmh'], errors='coerce').fillna(0.0)
+                            period_df_sorted['odometro_periodo_km'] = pd.to_numeric(period_df_sorted['odometro_periodo_km'], errors='coerce').fillna(0.0)
+                            diffs = period_df_sorted['odometro_periodo_km'].diff().fillna(0).clip(lower=0)
+                            valid = (diffs > 0) & (period_df_sorted['velocidade_kmh'] > 0)
+                            km_periodo_val = float(diffs[valid].sum())
+
+                            # Proporção de combustível permanece proporcional ao número de registros no período
+                            combustivel_periodo_calc = vehicle_data['combustivel'] * (len(period_df_sorted) / len(df)) if len(df) > 0 else 0
+
                             period_summary = {
                                 'placa': vehicle_data['placa'],
-                                'km_periodo': km_periodo,
-                                'vel_max_periodo': period_df['velocidade_kmh'].max(),
+                                'km_periodo': km_periodo_val,
+                                'vel_max_periodo': float(period_df_sorted.loc[valid, 'velocidade_kmh'].max()) if valid.any() else 0.0,
                                 'combustivel_periodo': combustivel_periodo_calc,
                                 'eficiencia_periodo': vehicle_data['eficiencia']
                             }
@@ -851,11 +1003,22 @@ class ReportGenerator:
                     period_df = df[df['periodo_operacional'] == period_key]
                     
                     if not period_df.empty:
+                        period_df_sorted = period_df.sort_values('data_evento').copy()
+                        period_df_sorted['velocidade_kmh'] = pd.to_numeric(period_df_sorted['velocidade_kmh'], errors='coerce').fillna(0.0)
+                        period_df_sorted['odometro_periodo_km'] = pd.to_numeric(period_df_sorted['odometro_periodo_km'], errors='coerce').fillna(0.0)
+                        diffs = period_df_sorted['odometro_periodo_km'].diff().fillna(0).clip(lower=0)
+                        if CONSISTENT_SPEED_KM_ONLY:
+                            valid = (diffs > 0) & (period_df_sorted['velocidade_kmh'] > 0)
+                        else:
+                            valid = (diffs > 0)
+                        km_periodo_val = float(diffs[valid].sum())
+                        vel_max_val = float(period_df_sorted.loc[valid, 'velocidade_kmh'].max()) if valid.any() else 0.0
+                        
                         period_summary = {
                             'placa': vehicle_data['placa'],
-                            'km_periodo': len(period_df),
-                            'vel_max_periodo': period_df['velocidade_kmh'].max() if not period_df.empty else 0,
-                            'combustivel_periodo': vehicle_data['combustivel'] * (len(period_df) / len(df)) if len(df) > 0 else 0,
+                            'km_periodo': km_periodo_val,
+                            'vel_max_periodo': vel_max_val,
+                            'combustivel_periodo': vehicle_data['combustivel'] * (len(period_df_sorted) / len(df)) if len(df) > 0 else 0,
                             'eficiencia_periodo': vehicle_data['eficiencia']
                         }
                         period_vehicles.append(period_summary)
@@ -866,71 +1029,23 @@ class ReportGenerator:
                         'veiculos': period_vehicles
                     }
             
-            # Agrupamento por dia (estrutura simplificada)
-            all_dates = set()
-            for vehicle_data in all_vehicles_data:
-                df = vehicle_data['dataframe']
-                if not df.empty:
-                    dates = df['data_evento'].dt.date.unique()
-                    all_dates.update(dates)
-            
-            for date in sorted(all_dates):
-                date_str = date.strftime('%Y-%m-%d')
-                daily_vehicles = []
-                
-                for vehicle_data in all_vehicles_data:
-                    df = vehicle_data['dataframe']
-                    daily_df = df[df['data_evento'].dt.date == date]
-                    
-                    if not daily_df.empty:
-                        daily_summary = {
-                            'placa': vehicle_data['placa'],
-                            'km_dia': daily_df['odometro_periodo_km'].max() - daily_df['odometro_periodo_km'].min() if len(daily_df) > 1 else 0,
-                            'vel_max': daily_df['velocidade_kmh'].max(),
-                            'combustivel_dia': vehicle_data['combustivel'] * (len(daily_df) / len(df)) if len(df) > 0 else 0,
-                            'eficiencia_dia': vehicle_data['eficiencia']
-                        }
-                        daily_vehicles.append(daily_summary)
-                
-                if daily_vehicles:
-                    consolidated_data["por_dia"][date_str] = daily_vehicles
-            
-            # Ranking ÚNICO estilo campeonato (todos os veículos ordenados)
-            sorted_by_score = sorted(all_vehicles_data, key=lambda x: x['score_custo_beneficio'], reverse=True)
-            
-            # Adiciona posição no ranking
-            for i, vehicle in enumerate(sorted_by_score, 1):
-                vehicle['posicao_ranking'] = i
-                vehicle['categoria_ranking'] = 'top3' if i <= 3 else 'bottom3' if i > len(sorted_by_score) - 3 else 'normal'
-            
-            consolidated_data["ranking_campeonato"] = {
-                'titulo': 'Ranking de Desempenho Custo/Benefício',
-                'descricao': 'Classificação geral baseada em quilometragem (40%) + eficiência (40%) + controle de velocidade (20%)',
-                'veiculos': sorted_by_score
-            }
-            
-            # Mantém estruturas antigas para compatibilidade
-            consolidated_data["ranking_melhores"] = [
-                {
-                    'categoria': 'Melhor Custo/Benefício',
-                    'criterio': 'score_custo_beneficio',
-                    'descricao': 'Alta quilometragem + Baixo consumo + Velocidades controladas',
-                    'veiculos': sorted_by_score[:5]
-                }
-            ]
-            
-            consolidated_data["ranking_piores"] = [
-                {
-                    'categoria': 'Pior Custo/Benefício',
-                    'criterio': 'score_custo_beneficio', 
-                    'descricao': 'Baixa quilometragem + Alto consumo + Picos de velocidade',
-                    'veiculos': sorted_by_score[-5:] if len(sorted_by_score) >= 5 else sorted_by_score[::-1]
-                }
-            ]
-            
-            # Detalhes dos veículos para tabela geral
-            consolidated_data["detalhes_veiculos"] = all_vehicles_data
-            
+            # Log estruturado do consolidado
+            try:
+                logger.info({
+                    'event': 'consolidated_report_built',
+                    'periodo': {'inicio': str(data_inicio), 'fim': str(data_fim)},
+                    'cliente': cliente_obj.nome if cliente_obj else None,
+                    'totais': {
+                        'total_veiculos': consolidated_data["resumo_geral"]["total_veiculos"],
+                        'km_total': consolidated_data["resumo_geral"]["km_total"],
+                        'combustivel_total': consolidated_data["resumo_geral"]["combustivel_total"],
+                        'vel_maxima_frota': consolidated_data["resumo_geral"]["vel_maxima_frota"]
+                    },
+                    'flags': {'CONSISTENT_SPEED_KM_ONLY': CONSISTENT_SPEED_KM_ONLY}
+                })
+            except Exception:
+                pass
+        
             return {
                 'success': True,
                 'data': consolidated_data,
@@ -949,3 +1064,9 @@ if __name__ == "__main__":
     # Teste do analisador
     analyzer = TelemetryAnalyzer()
     print("Serviços de análise carregados com sucesso!")
+
+# ... existing code ...
+
+# ==============================
+# LOGGING E FEATURE FLAGS GLOBAIS
+# ==============================

@@ -1,0 +1,393 @@
+{
+  "success": true,
+  "schema": {
+    "arquivo": "test_reporter.csv",
+    "colunas": [
+      {
+        "nome_coluna": "timestamp",
+        "tipo_estimado": "timestamp",
+        "exemplo_valor": "2025-09-01 08:00:00"
+      },
+      {
+        "nome_coluna": "lat",
+        "tipo_estimado": "lat",
+        "exemplo_valor": -15.7801
+      },
+      {
+        "nome_coluna": "lon",
+        "tipo_estimado": "lon",
+        "exemplo_valor": -47.9292
+      },
+      {
+        "nome_coluna": "odometer",
+        "tipo_estimado": "odometer",
+        "exemplo_valor": 1000.0
+      },
+      {
+        "nome_coluna": "speed",
+        "tipo_estimado": "speed",
+        "exemplo_valor": 60.0
+      },
+      {
+        "nome_coluna": "vehicle_id",
+        "tipo_estimado": "vehicle_id",
+        "exemplo_valor": "TEST001"
+      },
+      {
+        "nome_coluna": "client_id",
+        "tipo_estimado": "client_id",
+        "exemplo_valor": "ClientA"
+      }
+    ]
+  },
+  "mapping_info": {
+    "original_to_mapped": {
+      "timestamp": "timestamp",
+      "lat": "lat",
+      "lon": "lon",
+      "odometer": "odometer",
+      "speed": "speed",
+      "vehicle_id": "vehicle_id",
+      "client_id": "client_id"
+    },
+    "missing_columns": [
+      "ignition"
+    ],
+    "fallbacks_applied": []
+  },
+  "quality_report": {
+    "outliers_removed": 0,
+    "duplicates_removed": 0,
+    "gps_jumps_marked": 0,
+    "speed_outliers_marked": 0,
+    "anomalies_detected": [
+      {
+        "type": "quality_check_summary",
+        "initial_rows": 30,
+        "final_rows": 30,
+        "rows_removed": 0
+      }
+    ]
+  },
+  "distance_speed_metrics": {
+    "total_km_odometer": 1250.0,
+    "total_km_haversine": 4.452460409749368,
+    "total_km": 4.452460409749368,
+    "distance_source": "haversine",
+    "max_speed_raw": 130.0,
+    "max_speed": 130.0,
+    "sensor_issue": false,
+    "speed_source": "raw_speed"
+  },
+  "trips": [
+    {
+      "start_time": "2025-09-01T08:00:00",
+      "end_time": "2025-09-01T09:30:00",
+      "duration": 5400.0,
+      "distance_km": 0.4401703065209809,
+      "avg_speed_moving": 65.75,
+      "max_speed_trip": 70.0
+    }
+  ],
+  "general_metrics": {
+    "total_rows": 30,
+    "valid_rows": 30,
+    "start_time": "2025-09-01T08:00:00",
+    "end_time": "2025-09-02T17:00:00",
+    "total_trips": 0,
+    "total_distance_km": 0,
+    "max_speed_kmh": 0,
+    "avg_speed_kmh": 0
+  },
+  "verification_report": {
+    "total_rows_read": 30,
+    "valid_rows": 30,
+    "rows_removed": 0,
+    "outliers_detected": 0,
+    "duplicates_removed": 0,
+    "detected_schema": {
+      "arquivo": "test_reporter.csv",
+      "colunas": [
+        {
+          "nome_coluna": "timestamp",
+          "tipo_estimado": "timestamp",
+          "exemplo_valor": "2025-09-01 08:00:00"
+        },
+        {
+          "nome_coluna": "lat",
+          "tipo_estimado": "lat",
+          "exemplo_valor": -15.7801
+        },
+        {
+          "nome_coluna": "lon",
+          "tipo_estimado": "lon",
+          "exemplo_valor": -47.9292
+        },
+        {
+          "nome_coluna": "odometer",
+          "tipo_estimado": "odometer",
+          "exemplo_valor": 1000.0
+        },
+        {
+          "nome_coluna": "speed",
+          "tipo_estimado": "speed",
+          "exemplo_valor": 60.0
+        },
+        {
+          "nome_coluna": "vehicle_id",
+          "tipo_estimado": "vehicle_id",
+          "exemplo_valor": "TEST001"
+        },
+        {
+          "nome_coluna": "client_id",
+          "tipo_estimado": "client_id",
+          "exemplo_valor": "ClientA"
+        }
+      ]
+    },
+    "column_mapping": {
+      "original_to_mapped": {
+        "timestamp": "timestamp",
+        "lat": "lat",
+        "lon": "lon",
+        "odometer": "odometer",
+        "speed": "speed",
+        "vehicle_id": "vehicle_id",
+        "client_id": "client_id"
+      },
+      "missing_columns": [
+        "ignition"
+      ],
+      "fallbacks_applied": []
+    },
+    "applied_rules": {
+      "speed_outlier_threshold": 220,
+      "trip_speed_threshold": 3,
+      "trip_min_duration_s": 60,
+      "gps_jump_distance_km": 500
+    },
+    "checksum": "1|30"
+  },
+  "processed_data": [
+    {
+      "timestamp": "2025-09-01T08:00:00",
+      "lat": -15.7801,
+      "lon": -47.9292,
+      "odometer": 1000.0,
+      "speed": 60.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T08:30:00",
+      "lat": -15.781,
+      "lon": -47.93,
+      "odometer": 1030.0,
+      "speed": 65.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T09:00:00",
+      "lat": -15.782,
+      "lon": -47.931,
+      "odometer": 1060.0,
+      "speed": 70.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T09:30:00",
+      "lat": -15.783,
+      "lon": -47.932,
+      "odometer": 1090.0,
+      "speed": 68.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T10:00:00",
+      "lat": -15.784,
+      "lon": -47.933,
+      "odometer": 1120.0,
+      "speed": 0.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T10:30:00",
+      "lat": -15.785,
+      "lon": -47.934,
+      "odometer": 1150.0,
+      "speed": 72.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T11:00:00",
+      "lat": -15.786,
+      "lon": -47.935,
+      "odometer": 1180.0,
+      "speed": 75.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T11:30:00",
+      "lat": -15.787,
+      "lon": -47.936,
+      "odometer": 1210.0,
+      "speed": 78.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T12:00:00",
+      "lat": -15.788,
+      "lon": -47.937,
+      "odometer": 1240.0,
+      "speed": 80.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T12:30:00",
+      "lat": -15.789,
+      "lon": -47.938,
+      "odometer": 1270.0,
+      "speed": 82.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T13:00:00",
+      "lat": -15.79,
+      "lon": -47.939,
+      "odometer": 1300.0,
+      "speed": 85.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T14:00:00",
+      "lat": -15.791,
+      "lon": -47.94,
+      "odometer": 1350.0,
+      "speed": 90.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T15:00:00",
+      "lat": -15.792,
+      "lon": -47.941,
+      "odometer": 1400.0,
+      "speed": 95.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T16:00:00",
+      "lat": -15.793,
+      "lon": -47.942,
+      "odometer": 1450.0,
+      "speed": 100.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T17:00:00",
+      "lat": -15.794,
+      "lon": -47.943,
+      "odometer": 1500.0,
+      "speed": 105.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T18:00:00",
+      "lat": -15.795,
+      "lon": -47.944,
+      "odometer": 1550.0,
+      "speed": 110.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T19:00:00",
+      "lat": -15.796,
+      "lon": -47.945,
+      "odometer": 1600.0,
+      "speed": 115.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T20:00:00",
+      "lat": -15.797,
+      "lon": -47.946,
+      "odometer": 1650.0,
+      "speed": 120.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T21:00:00",
+      "lat": -15.798,
+      "lon": -47.947,
+      "odometer": 1700.0,
+      "speed": 125.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    },
+    {
+      "timestamp": "2025-09-01T22:00:00",
+      "lat": -15.799,
+      "lon": -47.948,
+      "odometer": 1750.0,
+      "speed": 130.0,
+      "vehicle_id": "TEST001",
+      "client_id": "ClientA",
+      "gps_jump": false,
+      "speed_outlier": false
+    }
+  ]
+}

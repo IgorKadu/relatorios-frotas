@@ -139,9 +139,20 @@ class CSVProcessor:
         if self._looks_like_numeric(sample_values):
             # Verifica faixas específicas
             numeric_series = pd.to_numeric(sample_values, errors='coerce')
-            # Filter out NaN values manually to avoid attribute errors
-            mask = pd.notna(numeric_series)
-            numeric_values = numeric_series[mask]
+            # Handle the case where dropna() might not be available
+            numeric_values = None
+            try:
+                # Try to use dropna method if available
+                if hasattr(numeric_series, 'dropna') and callable(getattr(numeric_series, 'dropna')):
+                    numeric_values = numeric_series.dropna()
+                else:
+                    # If dropna is not available, filter out NaN values manually
+                    mask = pd.notna(numeric_series)
+                    numeric_values = numeric_series[mask]
+            except (AttributeError, TypeError):
+                # If any error occurs, filter out NaN values manually
+                mask = pd.notna(numeric_series)
+                numeric_values = numeric_series[mask]
                 
             if len(numeric_values) > 0:
                 mean_val = float(numeric_values.mean())
@@ -397,12 +408,12 @@ class CSVProcessor:
             metrics['total_km_haversine'] = 0
         
         # Escolher a melhor distância
-        # Priorizar odômetro quando disponível e plausível (>= 2 leituras válidas e delta não-negativo)
-        odometer_valid = df['odometer'].notna() if 'odometer' in df.columns else pd.Series([], dtype=bool)
-        if 'odometer' in df.columns and odometer_valid.sum() >= 2 and metrics['total_km_odometer'] >= 0:
+        if metrics['total_km_odometer'] > 0 and metrics['total_km_odometer'] < metrics['total_km_haversine'] * 2:
+            # Odometer parece confiável
             metrics['total_km'] = metrics['total_km_odometer']
             metrics['distance_source'] = 'odometer'
         else:
+            # Usar haversine
             metrics['total_km'] = metrics['total_km_haversine']
             metrics['distance_source'] = 'haversine'
         
@@ -503,55 +514,30 @@ class CSVProcessor:
                 if trip_start_idx is not None and i > trip_start_idx:
                     # Verificar duração mínima
                     start_time = df.iloc[trip_start_idx]['timestamp']
-                    end_time = df.iloc[i]['timestamp']
-
+                    end_time = df.iloc[i-1]['timestamp']
                     duration = (end_time - start_time).total_seconds()
                     
                     if duration >= self.trip_min_duration_s:
-                        # Calcular distância da viagem
-                        odo_delta = None
-                        hav_cum = None
-                        # 1) Calcular delta de odômetro, quando disponível e plausível
-                        if 'odometer' in df.columns:
-                            odo_start = df.iloc[trip_start_idx].get('odometer')
-                            odo_end = df.iloc[i].get('odometer')
-                            if pd.notna(odo_start) and pd.notna(odo_end):
-                                delta = float(odo_end) - float(odo_start)
-                                if delta >= 0:
-                                    odo_delta = delta
-                        # 2) Calcular haversine cumulativo
+                        # Verificar deslocamento mínimo (> 100m)
                         if 'lat' in df.columns and 'lon' in df.columns:
-                            cumulative = 0.0
-                            for j in range(trip_start_idx + 1, i + 1):
-                                lat1 = df.iloc[j-1]['lat']
-                                lon1 = df.iloc[j-1]['lon']
-                                lat2 = df.iloc[j]['lat']
-                                lon2 = df.iloc[j]['lon']
-                                if all(pd.notna([lat1, lon1, lat2, lon2])):
-                                    cumulative += haversine(lat1, lon1, lat2, lon2)
-                            hav_cum = cumulative
-                        # 3) Escolher fonte
-                        if odo_delta is not None and odo_delta >= 0:
-                            distance_km = odo_delta
-                            distance_source = 'odometer'
-                        elif hav_cum is not None:
-                            distance_km = hav_cum
-                            distance_source = 'haversine'
-                        else:
-                            distance_km = 0.0
-                            distance_source = 'unknown'
-                        # Aplicar threshold mínimo de deslocamento (> 100m)
-                        if distance_km * 1000 > 100:
-                            # Criar trip
-                            trip = {
-                                'start_time': start_time,
-                                'end_time': end_time,
-                                'duration': duration,
-                                'distance_km': distance_km,
-                                'avg_speed_moving': self._calculate_avg_moving_speed(df, trip_start_idx, i),
-                                'max_speed_trip': self._calculate_max_speed_trip(df, trip_start_idx, i)
-                            }
-                            trips.append(trip)
+                            lat1 = df.iloc[trip_start_idx]['lat']
+                            lon1 = df.iloc[trip_start_idx]['lon']
+                            lat2 = df.iloc[i-1]['lat']
+                            lon2 = df.iloc[i-1]['lon']
+                            
+                            if all(pd.notna([lat1, lon1, lat2, lon2])):
+                                distance_km = haversine(lat1, lon1, lat2, lon2)
+                                if distance_km * 1000 > 100:  # > 100 metros
+                                    # Criar trip
+                                    trip = {
+                                        'start_time': start_time,
+                                        'end_time': end_time,
+                                        'duration': duration,
+                                        'distance_km': distance_km,
+                                        'avg_speed_moving': self._calculate_avg_moving_speed(df, trip_start_idx, i-1),
+                                        'max_speed_trip': self._calculate_max_speed_trip(df, trip_start_idx, i-1)
+                                    }
+                                    trips.append(trip)
                 
                 in_trip = False
                 trip_start_idx = None
@@ -853,3 +839,5 @@ def get_fuel_consumption_estimate(km_traveled: float, avg_speed: float, vehicle_
         'efficiency_kmL': round(adjusted_kmL, 2),
         'avg_speed': avg_speed
     }
+
+if __name__ == "__main__":
