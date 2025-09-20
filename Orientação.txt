@@ -1,0 +1,566 @@
+📌 Prompt Estruturado e Consolidado para Desenvolvimento do Sistema
+🎯 Objetivo do Projeto
+
+Criar um sistema que automatize o processamento de relatórios de telemetria veicular, transformando arquivos brutos exportados em CSV em relatórios estruturados PDF com insights personalizados para os clientes.
+
+O sistema deve:
+
+Rodar localmente e em modo Web (sem Docker).
+
+Utilizar banco de dados local (SQLite inicialmente, podendo evoluir para PostgreSQL).
+
+Gerar relatórios completos com tabelas, gráficos e mapas.
+
+Oferecer insights estratégicos de eficiência, economia e segurança da frota.
+
+📂 Estrutura dos Dados (CSV de Posições Históricas)
+
+Os arquivos seguem padrão único com colunas fixas. Cada linha = 1 registro de posição/atividade.
+
+Colunas principais:
+
+Cliente (texto)
+
+Placa (texto)
+
+Ativo (código interno)
+
+Data (DD/MM/YYYY HH:mm:ss)
+
+Data (GPRS)
+
+Velocidade (Km/h, int)
+
+Ignição (L = ligado, D = desligado)
+
+Motorista (texto)
+
+GPS (1/0)
+
+GPRS (1/0)
+
+Localização (latitude/longitude)
+
+Endereço (texto)
+
+Tipo do Evento (ignição, movimento etc.)
+
+Saída / Entrada (sensores digitais)
+
+Pacote (dados recebidos)
+
+Odômetro do período (Km)
+
+Odômetro embarcado (Km)
+
+Horímetro do período (HH:MM:SS)
+
+Horímetro embarcado (tempo total)
+
+Bateria (%)
+
+Tensão (V)
+
+Bloqueado (0 = desbloqueado, 1 = bloqueado)
+
+Imagem (campo anexo, opcional)
+
+🕒 Definição de Períodos Operacionais
+
+Manhã: 04:00 – 07:00
+
+Meio-dia: 10:50 – 13:00
+
+Tarde: 16:50 – 19:00
+
+Final de Semana (Sábado + Domingo): Todo o período
+
+Fora do horário operacional: Intervalos entre os períodos acima
+
+📊 Processamento e Indicadores
+Processamento Base
+
+Importar CSV automaticamente.
+
+Limpar e padronizar (datas, numéricos, formatos).
+
+Cálculos principais:
+
+Quilometragem total percorrida no período.
+
+Média e picos de velocidade.
+
+Tempo com ignição ligada, desligada, em movimento e ocioso.
+
+Ocorrências de eventos específicos (excesso de velocidade, paradas longas, bloqueios).
+
+Consistência dos sinais (GPS/GPRS).
+
+Comparação de desempenho entre períodos (diário, semanal, mensal).
+
+Dados Avançados
+
+Mapa de trajetos: localização + endereço + data/hora (mapa interativo HTML ou estático PNG para PDF).
+
+Estimativa de combustível: com base em velocidade média, odômetro e fórmula configurável (km/L por cliente).
+
+Risco de multas/acidentes:
+
+Excesso de velocidade em áreas urbanas.
+
+Excesso de paradas em locais de risco.
+
+Falhas de comunicação GPS/GPRS.
+
+📑 Estrutura do Relatório PDF
+
+Capa
+
+Logo da empresa
+
+Nome do cliente e placa do veículo
+
+Período do relatório
+
+Sumário Executivo
+
+Resumo de quilometragem, tempos e velocidade média.
+
+Comparação entre horários operacionais e fora do horário.
+
+Indicadores Principais
+
+Velocidade máxima
+
+Quilometragem total
+
+Tempos de uso (ligado, movimento, ocioso, desligado)
+
+Consumo estimado de combustível
+
+Estimativa de risco de multas/acidentes
+
+Mapa de Percurso
+
+Trajeto percorrido com marcações de velocidade e paradas.
+
+Gráficos e Tabelas
+
+Quilometragem diária/semanal
+
+Tempo em cada modo (ligado, movimento, ocioso, desligado)
+
+Comparação por períodos operacionais e fora do horário
+
+Análise Final e Recomendações
+
+Oportunidades de economia
+
+Melhorias de condução
+
+Alertas de manutenção preventiva
+
+⚙️ Requisitos Técnicos
+Linguagem e Ambiente
+
+Python 3.11+
+
+FastAPI + uvicorn (API Web)
+
+SQLite (local) → histórico e configurações de clientes
+
+Bibliotecas
+
+pandas / numpy → limpeza, cálculos, estatísticas
+
+matplotlib / seaborn / plotly → gráficos
+
+folium / geopandas → mapas interativos e estáticos
+
+reportlab / fpdf2 / weasyprint → geração de PDFs
+
+sqlalchemy → ORM e integração com banco
+
+fastapi → API Web
+
+Frontend (opcional/profissional)
+
+HTML/CSS/JS simples para upload/download
+
+React + Tailwind (para UX avançada)
+
+Integrações
+
+Upload de CSV via Web ou pasta local
+
+Exportação PDF direto para download
+
+Integração futura com Power BI (via DB)
+
+🛠️ Estrutura de Pastas do Projeto
+/relatorios-frotas
+│── /data                # CSVs de entrada
+│── /reports             # PDFs gerados
+│── /app
+│    ├── main.py         # aplicação principal (FastAPI)
+│    ├── models.py       # ORM SQLAlchemy
+│    ├── services.py     # processamento e insights
+│    ├── reports.py      # geração de PDFs
+│    └── utils.py        # funções auxiliares
+│── /frontend            # interface web (React opcional)
+│── requirements.txt     # pacotes Python
+│── README.md            # documentação
+
+🚀 Execução
+
+Instalar dependências:
+
+pip install -r requirements.txt
+
+
+Rodar localmente (API):
+
+uvicorn app.main:app --reload
+
+
+Acessar no navegador:
+👉 http://localhost:8000
+
+Fluxo:
+Upload de CSV → Processamento → Geração de PDF → Download
+
+
+TEXTO COMPLEMENTARES:
+
+TEXTO 1:
+
+📌 Prompt Estruturado para Desenvolvimento do Sistema
+🎯 Objetivo do Projeto
+
+Criar um sistema que automatize o processamento de relatórios de telemetria veicular, transformando os arquivos brutos exportados em CSV em relatórios estruturados em PDF com insights personalizados para os clientes.
+O sistema deve rodar localmente e em modo Web, sem uso de Docker, utilizando banco de dados e servidor local integrados.
+
+📂 Estrutura dos Dados (CSV de Posições Históricas)
+
+Os arquivos de dados seguem um padrão único com colunas fixas. Cada linha representa um registro de posição/atividade do veículo em determinado instante.
+
+Colunas do CSV:
+
+Cliente → Nome do cliente (texto).
+
+Placa → Identificação da placa do veículo (texto).
+
+Ativo → Código interno do veículo (texto).
+
+Data → Data/hora do evento principal no formato DD/MM/YYYY HH:mm:ss.
+
+Data (GPRS) → Data/hora do recebimento pelo servidor.
+
+Velocidade (Km) → Velocidade do veículo em km/h (número inteiro).
+
+Ignição → Estado do veículo: L (ligado), D (desligado).
+
+Motorista → Nome ou identificador do motorista (texto).
+
+GPS → Status do GPS (1 = ativo, 0 = inativo).
+
+Gprs → Status da comunicação GPRS (1 = ativo, 0 = inativo).
+
+Localização → Coordenadas latitude/longitude (float).
+
+Endereço → Endereço formatado (texto).
+
+Tipo do Evento → Tipo do evento de telemetria (ignição, movimento, etc).
+
+Saída → Sensores ou sinais digitais de saída.
+
+Entrada → Sensores ou sinais digitais de entrada.
+
+Pacote → Pacote de dados recebido.
+
+Odômetro do período (Km) → Quilometragem percorrida no período.
+
+Horímetro do período → Tempo de operação no período (HH:MM:SS).
+
+Horímetro embarcado → Tempo total de operação embarcado.
+
+Odômetro embarcado (Km) → Quilometragem total embarcada.
+
+Bateria → Nível da bateria em porcentagem (95 %, 100 %).
+
+Imagem → Campo reservado para anexos (normalmente vazio).
+
+Tensão → Voltagem registrada (float).
+
+Bloqueado → Status do bloqueio do veículo (0 = desbloqueado, 1 = bloqueado).
+
+📊 Processamento Necessário
+
+O sistema deve:
+
+Importar automaticamente os arquivos CSV brutos (mesmo formato).
+
+Limpar e padronizar os dados, convertendo datas e numéricos.
+
+Gerar indicadores de uso do veículo, como:
+
+Quilometragem total percorrida no mês.
+
+Média de velocidade.
+
+Tempo com ignição ligada vs desligada.
+
+Ocorrências de eventos específicos (paradas longas, excesso de velocidade, bloqueios).
+
+Consistência dos sinais de GPS/GPRS.
+
+Comparar desempenho por período (ex: semanal ou mensal).
+
+Gerar insights estratégicos para o cliente:
+
+Eficiência de uso da frota.
+
+Pontos de atenção (excesso de paradas, velocidade acima do permitido, falhas de comunicação).
+
+Sugestões de economia de combustível, manutenção preventiva, otimização de rotas.
+
+📑 Geração de Relatórios
+
+Relatórios devem ser exportados em PDF bem formatados, com:
+
+Capa com logo da empresa e nome do cliente.
+
+Sumário executivo.
+
+Tabelas e gráficos de desempenho (matplotlib/recharts).
+
+Análise descritiva clara e objetiva.
+
+Recomendação final para o cliente.
+
+⚙️ Requisitos Técnicos
+Linguagem e Ambiente
+
+Python 3.11+ para o processamento local.
+
+FastAPI ou Flask para exposição Web.
+
+Banco de dados SQLite (local) para início. (pode evoluir para PostgreSQL em servidor).
+
+Bibliotecas Python
+
+pandas → processamento e limpeza dos CSV.
+
+numpy → cálculos estatísticos.
+
+matplotlib / seaborn / plotly → geração de gráficos.
+
+reportlab / fpdf / weasyprint → geração de PDFs estruturados.
+
+sqlalchemy → ORM para integração com banco de dados local.
+
+fastapi + uvicorn → API Web local para upload e geração de relatórios.
+
+Frontend Web (mínimo necessário)
+
+HTML/CSS/JS simples para upload e download dos relatórios.
+
+Framework opcional: React + Tailwind para interface profissional.
+
+Integrações
+
+Upload de arquivos CSV via Web ou pasta local.
+
+Exportação em PDF direto para download.
+
+Possibilidade de integração futura com Power BI (via banco de dados).
+
+🛠️ Estrutura de Pastas do Projeto
+/relatorios-frotas
+│── /data                # CSVs de entrada
+│── /reports             # PDFs gerados
+│── /app
+│    ├── main.py         # aplicação principal (FastAPI/Flask)
+│    ├── models.py       # ORM SQLAlchemy
+│    ├── services.py     # processamento e insights
+│    ├── reports.py      # geração de PDFs
+│    └── utils.py        # funções auxiliares
+│── /frontend            # interface web (React opcional)
+│── requirements.txt     # pacotes Python
+│── README.md            # documentação
+
+🚀 Execução
+
+Instalar dependências:
+
+pip install -r requirements.txt
+
+
+Rodar localmente (API):
+
+uvicorn app.main:app --reload
+
+
+Acessar no navegador:
+
+http://localhost:8000
+
+
+Upload de CSV → Processamento → Download do PDF gerado.
+
+TEXTO 2:
+
+📌 Prompt Estruturado e Aprimorado para Desenvolvimento do Sistema
+🎯 Objetivo
+
+Automatizar a coleta, filtragem e análise de relatórios de telemetria veicular, considerando períodos operacionais específicos, geração de indicadores estratégicos e apresentação visual (tabelas, gráficos e mapas) em relatórios PDF para entrega aos clientes.
+
+🕒 Definição de Períodos Operacionais
+Horário Operacional
+
+Manhã: 04:00 – 07:00
+
+Meio-dia: 10:50 – 13:00
+
+Tarde: 16:50 – 19:00
+
+Final de Semana (Sábado + Domingo): Todo o período
+
+Fora do Horário Operacional
+
+Entre Manhã e Meio-dia: 07:00 – 10:50
+
+Entre Meio-dia e Tarde: 13:00 – 16:50
+
+📊 Dados a Serem Coletados e Calculados
+Parâmetros Base
+
+Cliente
+
+Placa
+
+Velocidade máxima atingida (Km/h)
+
+Odômetro (Km) – considerando tanto período quanto embarque total
+
+Tempo total ligado (hh:mm:ss)
+
+Tempo em movimento (hh:mm:ss)
+
+Tempo ocioso (ignição ligada, velocidade = 0)
+
+Tempo desligado (ignição desligada)
+
+Período (operacional, fora de operacional, final de semana)
+
+Setor (pode ser definido com base na região/endereço)
+
+Aprimoramentos com Dados Avançados
+
+Mapa de trajetos:
+Usar Localização + Endereço + Data/Hora para plotar o percurso no mapa interativo/estático.
+
+Picos de velocidade:
+Destacar trechos com velocidade acima de limite definido.
+
+Estimativas de combustível:
+Com base em:
+
+Velocidade média
+
+Odômetro do período
+
+Odômetro embarcado
+
+Fórmula customizável de consumo (km/L configurável por cliente).
+
+Risco de multas/acidentes:
+
+Detectar excesso de velocidade em áreas urbanas.
+
+Excesso de paradas em locais de risco.
+
+Falhas de comunicação GPS/GPRS.
+
+📑 Estrutura do Relatório PDF
+
+Capa
+
+Logo da empresa
+
+Nome do cliente e placa do veículo
+
+Período do relatório
+
+Sumário Executivo
+
+Resumo de quilometragem, tempo em operação, média de velocidade.
+
+Comparação entre horários operacionais e fora de horário.
+
+Indicadores Principais
+
+Velocidade máxima
+
+Quilometragem total
+
+Tempos de uso (ligado, movimento, ocioso, desligado)
+
+Consumo estimado de combustível
+
+Estimativa de risco de multas/acidentes
+
+Mapa de Percurso
+
+Trajeto percorrido com marcações de velocidade.
+
+Destaque de picos de velocidade e paradas longas.
+
+Gráficos e Tabelas
+
+Quilometragem diária/semanal.
+
+Tempo em cada modo (ligado, movimento, ocioso, desligado).
+
+Comparação entre horários operacionais e fora de horário.
+
+Análise Final e Recomendações
+
+Oportunidades de economia.
+
+Melhorias na condução.
+
+Alertas de manutenção preventiva.
+
+⚙️ Requisitos Técnicos (atualizados)
+Processamento de Dados
+
+pandas → filtragem por horários definidos, cálculos de tempo e métricas.
+
+numpy → estatísticas de médias, somatórios.
+
+Visualização
+
+matplotlib/plotly → gráficos de desempenho.
+
+folium/geopandas → geração de mapas interativos (HTML) e estáticos (PNG para PDF).
+
+Relatórios
+
+reportlab / fpdf2 / weasyprint → PDF estruturado e customizável.
+
+Backend
+
+FastAPI + uvicorn → API Web para upload e geração de relatórios.
+
+SQLite (local) → armazenamento de histórico dos relatórios e configurações de clientes.
+
+Estrutura Extra
+
+Configuração por cliente:
+
+Consumo médio do veículo (km/L).
+
+Limite de velocidade tolerado.
+
+Setores/rotas prioritárias.
