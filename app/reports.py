@@ -29,7 +29,7 @@ from html import escape
 import pandas as pd
 import numpy as np
 
-from .services import ReportGenerator, DataQualityRules, PeriodAggregator, HighlightGenerator
+from .services import ReportGenerator, DataQualityRules, PeriodAggregator, HighlightGenerator, TelemetryAnalyzer
 from .models import get_session, Veiculo, Cliente
 
 
@@ -142,49 +142,88 @@ class DailyWeeklyStrategy(ReportStrategy):
     
     def build_content(self, story: List, structured_data: Dict, data_inicio: datetime, 
                      data_fim: datetime, total_km: float, total_fuel: float) -> None:
-        """Constrói conteúdo para períodos curtos com máximo detalhamento"""
+        """Constrói conteúdo para períodos curtos com máximo detalhamento usando DADOS REAIS"""
         
-        # Agregação de dados validados
-        vehicles_data = {}
-        daily_data = {}
+        # Inicializa analisador para buscar dados reais do banco
+        analyzer = TelemetryAnalyzer()
         
-        # Processa dados de cada veículo
-        for vehicle_info in structured_data.get('desempenho_periodo', []):
-            placa = vehicle_info.get('placa', 'N/A')
+        try:
+            # Coleta dados reais de cada veículo do banco de dados
+            vehicles_data = {}
+            all_vehicles_daily_data = {}
             
-            # Simula DataFrame para validação (em implementação real viria do TelemetryAnalyzer)
-            # Por ora, usa os dados já processados mas aplica validação de consistência
-            km_total = vehicle_info.get('resumo_operacional', {}).get('quilometragem_total', 0)
-            velocidade_max = vehicle_info.get('resumo_operacional', {}).get('velocidade_maxima', 0)
-            tempo_movimento = vehicle_info.get('resumo_operacional', {}).get('tempo_movimento_horas', 0)
+            for vehicle_info in structured_data.get('desempenho_periodo', []):
+                placa = vehicle_info.get('placa', 'N/A')
+                
+                # BUSCA DADOS REAIS DO BANCO DE DADOS
+                df_real = analyzer.get_vehicle_data(placa, data_inicio, data_fim)
+                
+                if not df_real.empty:
+                    # Aplica validação de qualidade aos dados reais
+                    df_validated = DataQualityRules.validate_telemetry_consistency(df_real)
+                    
+                    # Gera métricas reais usando o analisador
+                    real_metrics = analyzer.generate_summary_metrics(df_validated, placa)
+                    
+                    # Agrega dados diários reais
+                    daily_data_real = PeriodAggregator.aggregate_daily(df_validated)
+                    all_vehicles_daily_data[placa] = daily_data_real
+                    
+                    # Calcula métricas validadas reais
+                    km_total_real = real_metrics.get('quilometragem_total', 0)
+                    velocidade_max_real = real_metrics.get('velocidade_maxima', 0)
+                    velocidade_media_real = real_metrics.get('velocidade_media', 0)
+                    tempo_movimento_real = real_metrics.get('tempo_movimento_horas', 0)
+                    alertas_real = len(df_validated[df_validated['velocidade_kmh'] > 80]) if not df_validated.empty else 0
+                    
+                    # Calcula combustível com dados reais
+                    fuel_real = DataQualityRules.calculate_fuel_consistency(
+                        km_total_real, velocidade_media_real, tempo_movimento_real
+                    )
+                    
+                    vehicles_data[placa] = {
+                        'km_total': km_total_real,
+                        'velocidade_max': velocidade_max_real,
+                        'velocidade_media': velocidade_media_real,
+                        'combustivel_estimado': fuel_real,
+                        'tempo_movimento_horas': tempo_movimento_real,
+                        'alertas_velocidade': alertas_real,
+                        'total_registros': len(df_validated),
+                        'registros_originais': len(df_real)
+                    }
+                else:
+                    # Se não há dados, registra como zero (dados reais)
+                    vehicles_data[placa] = {
+                        'km_total': 0,
+                        'velocidade_max': 0,
+                        'velocidade_media': 0,
+                        'combustivel_estimado': None,
+                        'tempo_movimento_horas': 0,
+                        'alertas_velocidade': 0,
+                        'total_registros': 0,
+                        'registros_originais': 0
+                    }
+                    all_vehicles_daily_data[placa] = {}
             
-            # Aplica regras de validação
-            fuel_consistent = DataQualityRules.calculate_fuel_consistency(
-                km_total, velocidade_max, tempo_movimento
-            )
+            # 1. Resumo geral com dados reais validados
+            self._add_validated_summary(story, structured_data, vehicles_data, total_km, total_fuel)
             
-            vehicles_data[placa] = {
-                'km_total': km_total if km_total > 0 and velocidade_max > 0 else 0,
-                'velocidade_max': velocidade_max if km_total > 0 else 0,
-                'combustivel_estimado': fuel_consistent,
-                'tempo_movimento_horas': tempo_movimento,
-                'alertas_velocidade': vehicle_info.get('resumo_operacional', {}).get('alertas_velocidade', 0)
-            }
-        
-        # 1. Resumo geral com dados validados
-        self._add_validated_summary(story, structured_data, vehicles_data, total_km, total_fuel)
-        
-        # 2. Detalhamento diário específico
-        self._add_daily_detailed_breakdown(story, structured_data, data_inicio, data_fim)
-        
-        # 3. Análise por período operacional detalhada
-        self._add_operational_periods_analysis(story, structured_data)
-        
-        # 4. Tabelas de performance por veículo
-        self._add_vehicle_performance_tables(story, vehicles_data)
-        
-        # 5. Gráficos específicos para período curto
-        self._add_daily_charts(story, structured_data, data_inicio, data_fim)
+            # 2. Detalhamento diário com dados reais
+            self._add_daily_detailed_breakdown_real(story, all_vehicles_daily_data, data_inicio, data_fim)
+            
+            # 3. Análise por período operacional com dados reais
+            self._add_operational_periods_analysis_real(story, vehicles_data, all_vehicles_daily_data)
+            
+            # 4. Tabelas de performance por veículo com dados reais
+            self._add_vehicle_performance_tables(story, vehicles_data)
+            
+            # 5. Insights baseados em dados reais
+            self._add_real_data_insights(story, vehicles_data, all_vehicles_daily_data, data_inicio, data_fim)
+            
+        finally:
+            # Sempre fecha a sessão do banco
+            if hasattr(analyzer, 'session'):
+                analyzer.session.close()
     
     def _add_validated_summary(self, story: List, structured_data: Dict, vehicles_data: Dict, total_km: float, total_fuel: float) -> None:
         """Adiciona resumo com dados validados"""
@@ -217,9 +256,9 @@ class DailyWeeklyStrategy(ReportStrategy):
         story.append(table)
         story.append(Spacer(1, 20))
     
-    def _add_daily_detailed_breakdown(self, story: List, structured_data: Dict, data_inicio: datetime, data_fim: datetime) -> None:
-        """Adiciona detalhamento dia por dia"""
-        story.append(Paragraph("<b>DETALHAMENTO DIÁRIO</b>", self.styles['Heading2Style']))
+    def _add_daily_detailed_breakdown_real(self, story: List, all_vehicles_daily_data: Dict, data_inicio: datetime, data_fim: datetime) -> None:
+        """Adiciona detalhamento dia por dia usando DADOS REAIS do banco"""
+        story.append(Paragraph("<b>DETALHAMENTO DIÁRIO - DADOS REAIS</b>", self.styles['Heading2Style']))
         story.append(Spacer(1, 10))
         
         current_date = data_inicio
@@ -231,27 +270,163 @@ class DailyWeeklyStrategy(ReportStrategy):
                 self.styles['Heading3Style']
             ))
             
-            # Simula dados diários (em implementação real viria do agregador)
-            daily_summary = "Operação normal • Sem alertas críticos • Dados consistentes"
-            story.append(Paragraph(f"<i>Status:</i> {daily_summary}", self.styles['Normal']))
+            # Calcula dados reais do dia para todos os veículos
+            day_totals = {
+                'km_total': 0,
+                'alertas_total': 0,
+                'veiculos_operando': 0,
+                'registros_total': 0
+            }
+            
+            for placa, daily_data in all_vehicles_daily_data.items():
+                if daily_data and current_date.date() in daily_data:
+                    day_info = daily_data[current_date.date()]
+                    day_totals['km_total'] += day_info.get('km_total', 0)
+                    day_totals['alertas_total'] += day_info.get('alertas_velocidade', 0)
+                    day_totals['registros_total'] += day_info.get('total_registros', 0)
+                    if day_info.get('km_total', 0) > 0:
+                        day_totals['veiculos_operando'] += 1
+            
+            # Status baseado em dados reais
+            if day_totals['veiculos_operando'] == 0:
+                status = "🔴 Sem operação registrada"
+            elif day_totals['alertas_total'] > 10:
+                status = f"⚠️ {day_totals['alertas_total']} alertas de velocidade - Atenção necessária"
+            elif day_totals['alertas_total'] > 0:
+                status = f"🟡 {day_totals['alertas_total']} alertas - Operação com cuidados"
+            else:
+                status = "🟢 Operação normal - Sem alertas críticos"
+            
+            # Detalhes do dia com dados reais
+            details_text = f"""
+            <i>Status:</i> {status}<br/>
+            <i>Quilometragem Total:</i> {day_totals['km_total']:,.1f} km<br/>
+            <i>Veículos Operando:</i> {day_totals['veiculos_operando']}<br/>
+            <i>Registros de Telemetria:</i> {day_totals['registros_total']:,}
+            """.replace(',', '.')
+            
+            story.append(Paragraph(details_text, self.styles['Normal']))
             story.append(Spacer(1, 10))
             
             current_date += timedelta(days=1)
     
-    def _add_operational_periods_analysis(self, story: List, structured_data: Dict) -> None:
-        """Análise detalhada dos períodos operacionais"""
-        story.append(Paragraph("<b>ANÁLISE POR PERÍODO OPERACIONAL</b>", self.styles['Heading2Style']))
+    def _add_operational_periods_analysis_real(self, story: List, vehicles_data: Dict, all_vehicles_daily_data: Dict) -> None:
+        """Análise detalhada dos períodos operacionais usando DADOS REAIS"""
+        story.append(Paragraph("<b>ANÁLISE POR PERÍODO OPERACIONAL - DADOS REAIS</b>", self.styles['Heading2Style']))
         story.append(Spacer(1, 10))
         
-        periods_text = """
-        <b>Manhã (04:00-07:00):</b> Pico de atividade matinal<br/>
-        <b>Meio-dia (10:50-13:00):</b> Período de operação intermediária<br/>
-        <b>Tarde (16:50-19:00):</b> Pico de atividade vespertina<br/>
-        <b>Final de Semana:</b> Operação reduzida ou manutenção
-        """
+        # Agrega dados de períodos operacionais de todos os veículos e dias
+        period_totals = {
+            'operacional_manha': {'km': 0, 'registros': 0},
+            'operacional_meio_dia': {'km': 0, 'registros': 0},
+            'operacional_tarde': {'km': 0, 'registros': 0},
+            'final_semana': {'km': 0, 'registros': 0},
+            'fora_horario': {'km': 0, 'registros': 0}
+        }
         
-        story.append(Paragraph(periods_text, self.styles['Normal']))
+        # Calcula totais reais por período
+        for placa, daily_data in all_vehicles_daily_data.items():
+            for date, day_info in daily_data.items():
+                periodos = day_info.get('periodos_operacionais', {})
+                km_day = day_info.get('km_total', 0)
+                registros_day = day_info.get('total_registros', 0)
+                
+                # Distribui proporcionalmente por período baseado nos registros reais
+                total_period_records = sum(periodos.values()) if periodos else 1
+                
+                for period, count in periodos.items():
+                    if period in period_totals:
+                        proportion = count / total_period_records if total_period_records > 0 else 0
+                        period_totals[period]['km'] += km_day * proportion
+                        period_totals[period]['registros'] += count
+                    elif period.startswith('fora_horario'):
+                        proportion = count / total_period_records if total_period_records > 0 else 0
+                        period_totals['fora_horario']['km'] += km_day * proportion
+                        period_totals['fora_horario']['registros'] += count
+        
+        # Cria tabela com dados reais de períodos
+        periods_data = [['Período', 'KM Total', 'Registros', 'Percentual KM']]
+        
+        total_km_all_periods = sum([p['km'] for p in period_totals.values()])
+        
+        periods_info = [
+            ('Manhã (04:00-07:00)', 'operacional_manha'),
+            ('Meio-dia (10:50-13:00)', 'operacional_meio_dia'), 
+            ('Tarde (16:50-19:00)', 'operacional_tarde'),
+            ('Final de Semana', 'final_semana'),
+            ('Fora de Horário', 'fora_horario')
+        ]
+        
+        for period_name, period_key in periods_info:
+            km = period_totals[period_key]['km']
+            registros = period_totals[period_key]['registros']
+            percentual = (km / total_km_all_periods * 100) if total_km_all_periods > 0 else 0
+            
+            periods_data.append([
+                period_name,
+                f"{km:,.1f} km".replace(',', '.'),
+                f"{registros:,}".replace(',', '.'),
+                f"{percentual:.1f}%"
+            ])
+        
+        table = Table(periods_data, colWidths=[3*inch, 2*inch, 1.5*inch, 1.5*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#795548')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black)
+        ]))
+        
+        story.append(table)
         story.append(Spacer(1, 15))
+    
+    def _add_real_data_insights(self, story: List, vehicles_data: Dict, all_vehicles_daily_data: Dict, data_inicio: datetime, data_fim: datetime) -> None:
+        """Adiciona insights baseados em dados reais do banco"""
+        story.append(Paragraph("<b>INSIGHTS BASEADOS EM DADOS REAIS</b>", self.styles['Heading2Style']))
+        story.append(Spacer(1, 10))
+        
+        # Gera highlights reais usando o sistema de highlights
+        highlights = HighlightGenerator.compute_highlights(
+            all_vehicles_daily_data,
+            {},  # Weekly data não aplicável para período curto
+            vehicles_data
+        )
+        
+        # Mostra insights reais
+        if highlights.get('insights_gerais'):
+            story.append(Paragraph("<b>📊 Insights Automáticos:</b>", self.styles['Heading3Style']))
+            for insight in highlights['insights_gerais']:
+                story.append(Paragraph(f"• {insight}", self.styles['Normal']))
+            story.append(Spacer(1, 10))
+        
+        # Mostra alertas reais 
+        if highlights.get('alertas_importantes'):
+            story.append(Paragraph("<b>⚠️ Alertas Identificados:</b>", self.styles['Heading3Style']))
+            for alerta in highlights['alertas_importantes']:
+                story.append(Paragraph(f"• {alerta}", self.styles['Normal']))
+            story.append(Spacer(1, 10))
+        
+        # Estatísticas gerais dos dados reais
+        total_vehicles = len(vehicles_data)
+        active_vehicles = len([v for v in vehicles_data.values() if v['km_total'] > 0])
+        total_km_real = sum([v['km_total'] for v in vehicles_data.values()])
+        total_alerts_real = sum([v['alertas_velocidade'] for v in vehicles_data.values()])
+        total_records = sum([v['total_registros'] for v in vehicles_data.values()])
+        
+        stats_text = f"""
+        <b>📈 Estatísticas do Período (Dados Reais):</b><br/>
+        • Total de veículos analisados: {total_vehicles}<br/>
+        • Veículos com operação: {active_vehicles}<br/>
+        • Quilometragem total validada: {total_km_real:,.1f} km<br/>
+        • Total de alertas de velocidade: {total_alerts_real}<br/>
+        • Registros de telemetria processados: {total_records:,}<br/>
+        • Período analisado: {(data_fim - data_inicio).days + 1} dias
+        """.replace(',', '.')
+        
+        story.append(Paragraph(stats_text, self.styles['Normal']))
+        story.append(Spacer(1, 20))
     
     def _add_vehicle_performance_tables(self, story: List, vehicles_data: Dict) -> None:
         """Tabelas de performance individual por veículo"""
@@ -310,65 +485,119 @@ class MediumTermStrategy(ReportStrategy):
     
     def build_content(self, story: List, structured_data: Dict, data_inicio: datetime, 
                      data_fim: datetime, total_km: float, total_fuel: float) -> None:
-        """Constrói conteúdo para períodos médios com foco em análise semanal"""
+        """Constrói conteúdo para períodos médios com foco em análise semanal usando DADOS REAIS"""
         
-        # Agrega dados por semana e identifica highlights
-        weekly_data = self._aggregate_weekly_data(structured_data, data_inicio, data_fim)
-        highlights = self._compute_period_highlights(structured_data, weekly_data)
+        # Inicializa analisador para buscar dados reais do banco
+        analyzer = TelemetryAnalyzer()
         
-        # 1. Resumo geral do período
-        self._add_general_period_summary(story, structured_data, data_inicio, data_fim, total_km, total_fuel)
-        
-        # 2. Análise semanal com gráficos
-        self._add_weekly_analysis_charts(story, weekly_data, data_inicio, data_fim)
-        
-        # 3. Highlights: piores e melhores dias
-        self._add_daily_highlights(story, highlights)
-        
-        # 4. Rankings de veículos (melhor e pior performance)
-        self._add_vehicle_rankings(story, highlights)
-        
-        # 5. Insights e recomendações baseados no período
-        self._add_period_insights(story, highlights, weekly_data)
-    
-    def _aggregate_weekly_data(self, structured_data: Dict, data_inicio: datetime, data_fim: datetime) -> Dict:
-        """Agrega dados por semana para análise de médio prazo"""
-        weeks = {}
-        current_week = data_inicio.isocalendar()[1]
-        
-        # Simula agregação semanal (em implementação real viria do PeriodAggregator)
-        week_start = data_inicio
-        week_num = 1
-        
-        while week_start <= data_fim:
-            week_end = min(week_start + timedelta(days=6), data_fim)
+        try:
+            # Coleta dados reais de cada veículo do banco de dados
+            all_vehicles_data = {}
+            all_vehicles_weekly_data = {}
+            all_vehicles_daily_data = {}
             
-            weeks[f"Semana {week_num}"] = {
-                'periodo': f"{week_start.strftime('%d/%m')} a {week_end.strftime('%d/%m')}",
-                'km_total': 150 * week_num,  # Simula dados
-                'dias_operacao': min(7, (week_end - week_start).days + 1),
-                'produtividade': 25 * week_num
-            }
+            for vehicle_info in structured_data.get('desempenho_periodo', []):
+                placa = vehicle_info.get('placa', 'N/A')
+                
+                # BUSCA DADOS REAIS DO BANCO DE DADOS
+                df_real = analyzer.get_vehicle_data(placa, data_inicio, data_fim)
+                
+                if not df_real.empty:
+                    # Aplica validação de qualidade aos dados reais
+                    df_validated = DataQualityRules.validate_telemetry_consistency(df_real)
+                    
+                    # Gera métricas reais usando o analisador
+                    real_metrics = analyzer.generate_summary_metrics(df_validated, placa)
+                    
+                    # Agrega dados semanais e diários reais
+                    weekly_data_real = PeriodAggregator.aggregate_weekly(df_validated)
+                    daily_data_real = PeriodAggregator.aggregate_daily(df_validated)
+                    
+                    all_vehicles_data[placa] = real_metrics
+                    all_vehicles_weekly_data[placa] = weekly_data_real
+                    all_vehicles_daily_data[placa] = daily_data_real
+                else:
+                    all_vehicles_data[placa] = {}
+                    all_vehicles_weekly_data[placa] = {}
+                    all_vehicles_daily_data[placa] = {}
             
-            week_start += timedelta(days=7)
-            week_num += 1
-        
-        return weeks
+            # Agrega dados por semana e identifica highlights REAIS
+            weekly_data = self._aggregate_weekly_data_real(all_vehicles_weekly_data)
+            highlights = self._compute_period_highlights_real(all_vehicles_data, all_vehicles_weekly_data, all_vehicles_daily_data)
+            
+            # 1. Resumo geral do período com dados reais
+            self._add_general_period_summary(story, structured_data, data_inicio, data_fim, total_km, total_fuel)
+            
+            # 2. Análise semanal com gráficos baseados em dados reais
+            self._add_weekly_analysis_charts_real(story, weekly_data, data_inicio, data_fim)
+            
+            # 3. Highlights reais: piores e melhores dias
+            self._add_daily_highlights_real(story, highlights)
+            
+            # 4. Rankings de veículos baseados em dados reais
+            self._add_vehicle_rankings_real(story, highlights)
+            
+            # 5. Insights baseados em dados reais do período
+            self._add_period_insights_real(story, highlights, weekly_data)
+            
+        finally:
+            # Sempre fecha a sessão do banco
+            if hasattr(analyzer, 'session'):
+                analyzer.session.close()
     
-    def _compute_period_highlights(self, structured_data: Dict, weekly_data: Dict) -> Dict:
-        """Computa highlights para o período médio"""
-        return {
-            'piores_dias': [
-                {'data': '15/09/2025', 'motivo': 'Baixa quilometragem', 'km': 45},
-                {'data': '22/09/2025', 'motivo': 'Excesso de alertas', 'alertas': 12}
-            ],
-            'melhores_dias': [
-                {'data': '18/09/2025', 'motivo': 'Alta produtividade', 'km': 180},
-                {'data': '25/09/2025', 'motivo': 'Operação eficiente', 'eficiencia': 95}
-            ],
-            'melhor_veiculo': {'placa': 'TFP-8H93', 'km_total': 850, 'eficiencia': 92},
-            'pior_veiculo': {'placa': 'TGF-3D93', 'km_total': 320, 'alertas': 25}
-        }
+    def _aggregate_weekly_data_real(self, all_vehicles_weekly_data: Dict) -> Dict:
+        """Agrega dados semanais REAIS de todos os veículos"""
+        consolidated_weekly = {}
+        
+        # Agrega dados semanais de todos os veículos
+        for placa, weekly_data in all_vehicles_weekly_data.items():
+            for week_period, week_info in weekly_data.items():
+                if week_period not in consolidated_weekly:
+                    consolidated_weekly[week_period] = {
+                        'periodo': week_info.get('periodo', week_period),
+                        'km_total': 0,
+                        'velocidade_max': 0,
+                        'tempo_ligado_horas': 0,
+                        'tempo_movimento_horas': 0,
+                        'alertas_velocidade': 0,
+                        'veiculos_operando': 0,
+                        'registros_total': 0
+                    }
+                
+                # Soma dados reais de cada veículo
+                consolidated_weekly[week_period]['km_total'] += week_info.get('km_total', 0)
+                consolidated_weekly[week_period]['velocidade_max'] = max(
+                    consolidated_weekly[week_period]['velocidade_max'],
+                    week_info.get('velocidade_max', 0)
+                )
+                consolidated_weekly[week_period]['tempo_ligado_horas'] += week_info.get('tempo_ligado_horas', 0)
+                consolidated_weekly[week_period]['tempo_movimento_horas'] += week_info.get('tempo_movimento_horas', 0)
+                consolidated_weekly[week_period]['alertas_velocidade'] += week_info.get('alertas_velocidade', 0)
+                consolidated_weekly[week_period]['registros_total'] += week_info.get('total_registros', 0)
+                
+                if week_info.get('km_total', 0) > 0:
+                    consolidated_weekly[week_period]['veiculos_operando'] += 1
+        
+        # Calcula produtividade e eficiência reais
+        for week_period, week_data in consolidated_weekly.items():
+            if week_data['tempo_movimento_horas'] > 0:
+                week_data['produtividade'] = week_data['km_total'] / week_data['tempo_movimento_horas']
+            else:
+                week_data['produtividade'] = 0
+                
+        return consolidated_weekly
+    
+    def _compute_period_highlights_real(self, all_vehicles_data: Dict, all_vehicles_weekly_data: Dict, all_vehicles_daily_data: Dict) -> Dict:
+        """Computa highlights REAIS para o período médio usando dados do banco"""
+        
+        # Usa o sistema de highlights real implementado
+        highlights = HighlightGenerator.compute_highlights(
+            all_vehicles_daily_data,
+            all_vehicles_weekly_data,
+            all_vehicles_data
+        )
+        
+        return highlights
     
     def _add_general_period_summary(self, story: List, structured_data: Dict, data_inicio: datetime, 
                                    data_fim: datetime, total_km: float, total_fuel: float) -> None:
@@ -387,6 +616,127 @@ class MediumTermStrategy(ReportStrategy):
         
         story.append(Paragraph(summary_text.replace(',', '.'), self.styles['Normal']))
         story.append(Spacer(1, 15))
+    
+    def _add_weekly_analysis_charts_real(self, story: List, weekly_data: Dict, data_inicio: datetime, data_fim: datetime) -> None:
+        """Análise semanal com dados reais para períodos médios"""
+        story.append(Paragraph("<b>ANÁLISE SEMANAL - DADOS REAIS</b>", self.styles['Heading2Style']))
+        story.append(Spacer(1, 10))
+        
+        # Cria tabela com dados semanais reais
+        weekly_table_data = [['Semana', 'KM Total', 'Veículos', 'Produtividade', 'Alertas']]
+        
+        for week_period, week_info in weekly_data.items():
+            km_total = week_info.get('km_total', 0)
+            veiculos = week_info.get('veiculos_operando', 0)
+            produtividade = week_info.get('produtividade', 0)
+            alertas = week_info.get('alertas_velocidade', 0)
+            
+            weekly_table_data.append([
+                week_info.get('periodo', week_period),
+                f"{km_total:,.1f} km".replace(',', '.'),
+                str(veiculos),
+                f"{produtividade:,.1f} km/h".replace(',', '.'),
+                str(alertas)
+            ])
+        
+        table = Table(weekly_table_data, colWidths=[2*inch, 1.5*inch, 1*inch, 1.5*inch, 1*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E7D32')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black)
+        ]))
+        
+        story.append(table)
+        story.append(Spacer(1, 20))
+    
+    def _add_daily_highlights_real(self, story: List, highlights: Dict) -> None:
+        """Highlights de dias com dados reais"""
+        story.append(Paragraph("<b>📈 MELHORES E PIORES DIAS - DADOS REAIS</b>", self.styles['Heading2Style']))
+        story.append(Spacer(1, 10))
+        
+        # Melhores dias
+        if highlights.get('melhores_dias'):
+            story.append(Paragraph("<b>🏆 Melhores Dias:</b>", self.styles['Heading3Style']))
+            for dia in highlights['melhores_dias'][:3]:  # Top 3
+                story.append(Paragraph(f"• {dia.get('data', 'N/A')} - {dia.get('motivo', 'Alta performance')}", self.styles['Normal']))
+            story.append(Spacer(1, 10))
+        
+        # Piores dias
+        if highlights.get('piores_dias'):
+            story.append(Paragraph("<b>⚠️ Dias com Atenção Necessária:</b>", self.styles['Heading3Style']))
+            for dia in highlights['piores_dias'][:3]:  # Top 3
+                story.append(Paragraph(f"• {dia.get('data', 'N/A')} - {dia.get('motivo', 'Performance baixa')}", self.styles['Normal']))
+            story.append(Spacer(1, 10))
+        
+        story.append(Spacer(1, 15))
+    
+    def _add_vehicle_rankings_real(self, story: List, highlights: Dict) -> None:
+        """Rankings de veículos com dados reais"""
+        story.append(Paragraph("<b>🚛 RANKING DE VEÍCULOS - DADOS REAIS</b>", self.styles['Heading2Style']))
+        story.append(Spacer(1, 10))
+        
+        # Melhor veículo
+        if highlights.get('melhor_veiculo'):
+            melhor = highlights['melhor_veiculo']
+            story.append(Paragraph("<b>🥇 Melhor Performance:</b>", self.styles['Heading3Style']))
+            story.append(Paragraph(
+                f"Veículo: {melhor.get('placa', 'N/A')} - {melhor.get('km_total', 0):,.1f} km".replace(',', '.'),
+                self.styles['Normal']
+            ))
+            story.append(Spacer(1, 10))
+        
+        # Pior veículo
+        if highlights.get('pior_veiculo'):
+            pior = highlights['pior_veiculo']
+            story.append(Paragraph("<b>⚠️ Necessita Atenção:</b>", self.styles['Heading3Style']))
+            story.append(Paragraph(
+                f"Veículo: {pior.get('placa', 'N/A')} - {pior.get('alertas', 0)} alertas",
+                self.styles['Normal']
+            ))
+            story.append(Spacer(1, 10))
+        
+        story.append(Spacer(1, 15))
+    
+    def _add_period_insights_real(self, story: List, highlights: Dict, weekly_data: Dict) -> None:
+        """Insights do período baseados em dados reais"""
+        story.append(Paragraph("<b>💡 INSIGHTS DO PERÍODO - DADOS REAIS</b>", self.styles['Heading2Style']))
+        story.append(Spacer(1, 10))
+        
+        # Insights automáticos baseados em dados reais
+        if highlights.get('insights_gerais'):
+            story.append(Paragraph("<b>📊 Análises Automáticas:</b>", self.styles['Heading3Style']))
+            for insight in highlights['insights_gerais']:
+                story.append(Paragraph(f"• {insight}", self.styles['Normal']))
+            story.append(Spacer(1, 10))
+        
+        # Tendências semanais
+        if weekly_data:
+            weeks_list = list(weekly_data.items())
+            if len(weeks_list) >= 2:
+                first_week = weeks_list[0][1]
+                last_week = weeks_list[-1][1]
+                
+                km_trend = last_week.get('km_total', 0) - first_week.get('km_total', 0)
+                alert_trend = last_week.get('alertas_velocidade', 0) - first_week.get('alertas_velocidade', 0)
+                
+                story.append(Paragraph("<b>📈 Tendências:</b>", self.styles['Heading3Style']))
+                
+                if km_trend > 0:
+                    story.append(Paragraph(f"• Quilometragem crescente: +{km_trend:,.1f} km na última semana".replace(',', '.'), self.styles['Normal']))
+                elif km_trend < 0:
+                    story.append(Paragraph(f"• Quilometragem decrescente: {km_trend:,.1f} km na última semana".replace(',', '.'), self.styles['Normal']))
+                
+                if alert_trend > 0:
+                    story.append(Paragraph(f"• ⚠️ Aumento de alertas: +{alert_trend} na última semana", self.styles['Normal']))
+                elif alert_trend < 0:
+                    story.append(Paragraph(f"• ✅ Redução de alertas: {alert_trend} na última semana", self.styles['Normal']))
+                
+                story.append(Spacer(1, 10))
+        
+        story.append(Spacer(1, 20))
     
     def _add_weekly_analysis_charts(self, story: List, weekly_data: Dict, data_inicio: datetime, data_fim: datetime) -> None:
         """Análise gráfica das semanas"""
@@ -499,57 +849,161 @@ class MonthlyStrategy(ReportStrategy):
     
     def build_content(self, story: List, structured_data: Dict, data_inicio: datetime, 
                      data_fim: datetime, total_km: float, total_fuel: float) -> None:
-        """Constrói conteúdo para períodos longos com análise de 4 semanas"""
+        """Constrói conteúdo para períodos longos com análise de 4 semanas usando DADOS REAIS"""
         
-        # Agrega dados por 4 semanas
-        four_weeks_data = self._aggregate_four_weeks_data(structured_data, data_inicio, data_fim)
-        monthly_insights = self._compute_monthly_insights(structured_data, four_weeks_data)
+        # Inicializa analisador para buscar dados reais do banco
+        analyzer = TelemetryAnalyzer()
         
-        # 1. Sumário executivo mensal
-        self._add_monthly_executive_summary(story, structured_data, data_inicio, data_fim, total_km, total_fuel)
-        
-        # 2. Análise das 4 semanas com gráficos comparativos
-        self._add_four_weeks_analysis(story, four_weeks_data)
-        
-        # 3. Comparativo de performance semanal
-        self._add_weekly_performance_comparison(story, four_weeks_data)
-        
-        # 4. Highlights mensais (melhores/piores semanas e veículos)
-        self._add_monthly_highlights(story, monthly_insights)
-        
-        # 5. Tendências e projeções baseadas no mês
-        self._add_monthly_trends_projections(story, monthly_insights, four_weeks_data)
-    
-    def _aggregate_four_weeks_data(self, structured_data: Dict, data_inicio: datetime, data_fim: datetime) -> Dict:
-        """Agrega dados em 4 semanas para análise mensal"""
-        period_days = (data_fim - data_inicio).days + 1
-        weeks_count = max(4, period_days // 7)
-        
-        weeks_data = {}
-        for i in range(1, min(weeks_count + 1, 5)):  # Máximo 4 semanas
-            week_start = data_inicio + timedelta(weeks=i-1)
-            week_end = min(week_start + timedelta(days=6), data_fim)
+        try:
+            # Coleta dados reais de cada veículo do banco de dados
+            all_vehicles_data = {}
+            all_vehicles_weekly_data = {}
+            all_vehicles_daily_data = {}
             
-            weeks_data[f"Semana {i}"] = {
-                'periodo': f"{week_start.strftime('%d/%m')} a {week_end.strftime('%d/%m')}",
-                'km_total': 200 + (i * 50),  # Simula progressão
-                'dias_operacao': min(7, (week_end - week_start).days + 1),
-                'eficiencia': 85 + (i * 2),
-                'alertas_total': max(0, 10 - i),
-                'combustivel_total': 80 + (i * 20)
-            }
-        
-        return weeks_data
+            for vehicle_info in structured_data.get('desempenho_periodo', []):
+                placa = vehicle_info.get('placa', 'N/A')
+                
+                # BUSCA DADOS REAIS DO BANCO DE DADOS
+                df_real = analyzer.get_vehicle_data(placa, data_inicio, data_fim)
+                
+                if not df_real.empty:
+                    # Aplica validação de qualidade aos dados reais
+                    df_validated = DataQualityRules.validate_telemetry_consistency(df_real)
+                    
+                    # Gera métricas reais usando o analisador
+                    real_metrics = analyzer.generate_summary_metrics(df_validated, placa)
+                    
+                    # Agrega dados semanais e diários reais
+                    weekly_data_real = PeriodAggregator.aggregate_weekly(df_validated)
+                    daily_data_real = PeriodAggregator.aggregate_daily(df_validated)
+                    
+                    all_vehicles_data[placa] = real_metrics
+                    all_vehicles_weekly_data[placa] = weekly_data_real
+                    all_vehicles_daily_data[placa] = daily_data_real
+                else:
+                    all_vehicles_data[placa] = {}
+                    all_vehicles_weekly_data[placa] = {}
+                    all_vehicles_daily_data[placa] = {}
+            
+            # Agrega dados por 4 semanas e computa insights REAIS
+            four_weeks_data = self._aggregate_four_weeks_data_real(all_vehicles_weekly_data, data_inicio, data_fim)
+            monthly_insights = self._compute_monthly_insights_real(all_vehicles_data, all_vehicles_weekly_data, all_vehicles_daily_data, four_weeks_data)
+            
+            # 1. Sumário executivo mensal com dados reais
+            self._add_monthly_executive_summary(story, structured_data, data_inicio, data_fim, total_km, total_fuel)
+            
+            # 2. Análise das 4 semanas com dados reais
+            self._add_four_weeks_analysis_real(story, four_weeks_data)
+            
+            # 3. Comparativo de performance semanal com dados reais
+            self._add_weekly_performance_comparison_real(story, four_weeks_data)
+            
+            # 4. Highlights mensais baseados em dados reais
+            self._add_monthly_highlights_real(story, monthly_insights)
+            
+            # 5. Tendências e projeções baseadas em dados reais
+            self._add_monthly_trends_projections_real(story, monthly_insights, four_weeks_data)
+            
+        finally:
+            # Sempre fecha a sessão do banco
+            if hasattr(analyzer, 'session'):
+                analyzer.session.close()
     
-    def _compute_monthly_insights(self, structured_data: Dict, four_weeks_data: Dict) -> Dict:
-        """Computa insights mensais baseados nas 4 semanas"""
+    def _aggregate_four_weeks_data_real(self, all_vehicles_weekly_data: Dict, data_inicio: datetime, data_fim: datetime) -> Dict:
+        """Agrega dados REAIS em 4 semanas para análise mensal"""
+        
+        # Consolida dados semanais reais de todos os veículos
+        consolidated_weekly = {}
+        
+        # Agrega dados semanais de todos os veículos
+        for placa, weekly_data in all_vehicles_weekly_data.items():
+            for week_period, week_info in weekly_data.items():
+                if week_period not in consolidated_weekly:
+                    consolidated_weekly[week_period] = {
+                        'periodo': week_info.get('periodo', week_period),
+                        'km_total': 0,
+                        'velocidade_max': 0,
+                        'tempo_ligado_horas': 0,
+                        'tempo_movimento_horas': 0,
+                        'alertas_velocidade': 0,
+                        'veiculos_operando': 0,
+                        'registros_total': 0,
+                        'dias_operacao': 7  # Padrão para semana completa
+                    }
+                
+                # Soma dados reais de cada veículo
+                consolidated_weekly[week_period]['km_total'] += week_info.get('km_total', 0)
+                consolidated_weekly[week_period]['velocidade_max'] = max(
+                    consolidated_weekly[week_period]['velocidade_max'],
+                    week_info.get('velocidade_max', 0)
+                )
+                consolidated_weekly[week_period]['tempo_ligado_horas'] += week_info.get('tempo_ligado_horas', 0)
+                consolidated_weekly[week_period]['tempo_movimento_horas'] += week_info.get('tempo_movimento_horas', 0)
+                consolidated_weekly[week_period]['alertas_velocidade'] += week_info.get('alertas_velocidade', 0)
+                consolidated_weekly[week_period]['registros_total'] += week_info.get('total_registros', 0)
+                
+                if week_info.get('km_total', 0) > 0:
+                    consolidated_weekly[week_period]['veiculos_operando'] += 1
+        
+        # Calcula eficiência real baseada nos dados
+        for week_period, week_data in consolidated_weekly.items():
+            if week_data['tempo_ligado_horas'] > 0:
+                week_data['eficiencia'] = (week_data['tempo_movimento_horas'] / week_data['tempo_ligado_horas']) * 100
+            else:
+                week_data['eficiencia'] = 0
+                
+            # Estima combustível baseado em km reais
+            week_data['combustivel_total'] = week_data['km_total'] / 12.0 if week_data['km_total'] > 0 else 0
+        
+        return consolidated_weekly
+    
+    def _compute_monthly_insights_real(self, all_vehicles_data: Dict, all_vehicles_weekly_data: Dict, all_vehicles_daily_data: Dict, four_weeks_data: Dict) -> Dict:
+        """Computa insights mensais REAIS baseados nos dados do banco"""
+        
+        if not four_weeks_data:
+            return {}
+        
+        # Encontra melhor e pior semana baseada em dados reais
+        melhor_semana = max(four_weeks_data.items(), key=lambda x: x[1].get('km_total', 0))
+        pior_semana = min(four_weeks_data.items(), key=lambda x: x[1].get('km_total', 0))
+        
+        # Calcula métricas reais do mês
+        total_km_mes = sum([w.get('km_total', 0) for w in four_weeks_data.values()])
+        total_alertas_mes = sum([w.get('alertas_velocidade', 0) for w in four_weeks_data.values()])
+        produtividade_media = total_km_mes / len(four_weeks_data) if four_weeks_data else 0
+        
+        # Calcula eficiência geral real
+        total_tempo_ligado = sum([w.get('tempo_ligado_horas', 0) for w in four_weeks_data.values()])
+        total_tempo_movimento = sum([w.get('tempo_movimento_horas', 0) for w in four_weeks_data.values()])
+        eficiencia_geral = (total_tempo_movimento / total_tempo_ligado * 100) if total_tempo_ligado > 0 else 0
+        
+        # Analisa tendência baseada na primeira vs última semana
+        weeks_list = list(four_weeks_data.items())
+        if len(weeks_list) >= 2:
+            primeira_semana_km = weeks_list[0][1].get('km_total', 0)
+            ultima_semana_km = weeks_list[-1][1].get('km_total', 0)
+            tendencia_crescimento = ultima_semana_km > primeira_semana_km
+        else:
+            tendencia_crescimento = False
+        
+        # Usa o sistema de highlights real para insights avançados
+        highlights = HighlightGenerator.compute_highlights(
+            all_vehicles_daily_data,
+            all_vehicles_weekly_data,
+            all_vehicles_data
+        )
+        
         return {
-            'melhor_semana': 'Semana 4',
-            'pior_semana': 'Semana 1', 
-            'tendencia_crescimento': True,
-            'total_alertas_mes': sum([w.get('alertas_total', 0) for w in four_weeks_data.values()]),
-            'produtividade_media_semanal': sum([w.get('km_total', 0) for w in four_weeks_data.values()]) / len(four_weeks_data),
-            'eficiencia_geral': 88.5
+            'melhor_semana': melhor_semana[0] if melhor_semana else 'N/A',
+            'melhor_semana_km': melhor_semana[1].get('km_total', 0) if melhor_semana else 0,
+            'pior_semana': pior_semana[0] if pior_semana else 'N/A',
+            'pior_semana_km': pior_semana[1].get('km_total', 0) if pior_semana else 0,
+            'tendencia_crescimento': tendencia_crescimento,
+            'total_alertas_mes': total_alertas_mes,
+            'produtividade_media_semanal': produtividade_media,
+            'eficiencia_geral': eficiencia_geral,
+            'insights_avancados': highlights.get('insights_gerais', []),
+            'alertas_importantes': highlights.get('alertas_importantes', [])
         }
     
     def _add_monthly_executive_summary(self, story: List, structured_data: Dict, data_inicio: datetime, 
