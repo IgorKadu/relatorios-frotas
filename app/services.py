@@ -42,6 +42,374 @@ CONSISTENT_SPEED_KM_ONLY = True
 from .models import Cliente, Veiculo, PosicaoHistorica, get_session
 from .utils import get_fuel_consumption_estimate
 
+
+# ==============================
+# REGRAS DE VALIDAÇÃO DE DADOS
+# ==============================
+
+class DataQualityRules:
+    """
+    Regras para validação e filtragem de dados inconsistentes
+    """
+    
+    @staticmethod
+    def validate_telemetry_consistency(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove registros com dados inconsistentes que não fazem sentido para relatórios profissionais:
+        - KM > 0 mas velocidade = 0
+        - Velocidade > 0 mas KM = 0  
+        - KM e velocidade > 0 mas consumo de combustível = 0
+        """
+        if df.empty:
+            return df
+        
+        logger.info(f"Validando consistência de {len(df)} registros")
+        original_count = len(df)
+        
+        # Cria cópia para não modificar o original
+        df_clean = df.copy()
+        
+        # Regra 1: Remove KM > 0 com velocidade = 0
+        if 'odometro_periodo_km' in df_clean.columns and 'velocidade_kmh' in df_clean.columns:
+            mask_invalid_km_speed = (
+                (df_clean['odometro_periodo_km'] > 0) & 
+                (df_clean['velocidade_kmh'] == 0)
+            )
+            df_clean = df_clean[~mask_invalid_km_speed]
+            
+        # Regra 2: Remove velocidade > 0 com KM = 0 (quando em movimento)
+        if 'velocidade_kmh' in df_clean.columns and 'odometro_periodo_km' in df_clean.columns and 'em_movimento' in df_clean.columns:
+            mask_invalid_speed_km = (
+                (df_clean['velocidade_kmh'] > 0) & 
+                (df_clean['odometro_periodo_km'] == 0) &
+                (df_clean['em_movimento'] == True)
+            )
+            df_clean = df_clean[~mask_invalid_speed_km]
+        
+        # Regra 3: Valida dados de GPS/GPRS quando disponíveis
+        if 'latitude' in df_clean.columns and 'longitude' in df_clean.columns:
+            mask_invalid_coords = (
+                (df_clean['latitude'] == 0) & 
+                (df_clean['longitude'] == 0)
+            )
+            df_clean = df_clean[~mask_invalid_coords]
+        
+        removed_count = original_count - len(df_clean)
+        if removed_count > 0:
+            logger.info(f"Removidos {removed_count} registros inconsistentes ({removed_count/original_count:.1%})")
+        
+        return df_clean
+    
+    @staticmethod
+    def calculate_fuel_consistency(km_total: float, speed_avg: float, movement_time_hours: float) -> Optional[float]:
+        """
+        Calcula consumo de combustível apenas quando os dados fazem sentido
+        """
+        # Só calcula se há movimento real
+        if km_total <= 0 or speed_avg <= 0 or movement_time_hours <= 0:
+            return None
+        
+        # Estima baseado em velocidade média e tempo
+        return get_fuel_consumption_estimate(km_total, speed_avg)
+
+
+# ==============================
+# AGREGADORES PARA DIFERENTES PERÍODOS
+# ==============================
+
+class PeriodAggregator:
+    """
+    Agregador de dados para diferentes períodos de análise
+    """
+    
+    @staticmethod
+    def aggregate_daily(df: pd.DataFrame) -> Dict:
+        """
+        Agrega dados por dia
+        """
+        if df.empty:
+            return {}
+        
+        # Aplica validação de qualidade
+        df_clean = DataQualityRules.validate_telemetry_consistency(df)
+        
+        daily_data = {}
+        df_clean['date'] = pd.to_datetime(df_clean['data_evento']).dt.date
+        
+        for date, day_df in df_clean.groupby('date'):
+            daily_data[date] = {
+                'total_registros': len(day_df),
+                'km_total': day_df['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else day_df['odometro_periodo_km'].sum(),
+                'velocidade_max': day_df['velocidade_kmh'].max(),
+                'velocidade_media': day_df[day_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(day_df[day_df['velocidade_kmh'] > 0]) > 0 else 0,
+                'tempo_ligado_horas': len(day_df[day_df['ligado'] == True]) * 5 / 60,  # 5min intervals
+                'tempo_movimento_horas': len(day_df[day_df['em_movimento'] == True]) * 5 / 60,
+                'alertas_velocidade': len(day_df[day_df['velocidade_kmh'] > 80]),
+                'periodos_operacionais': day_df['periodo_operacional'].value_counts().to_dict()
+            }
+            
+            # Adiciona consumo de combustível validado
+            km = daily_data[date]['km_total']
+            speed_avg = daily_data[date]['velocidade_media']
+            movement_hours = daily_data[date]['tempo_movimento_horas']
+            daily_data[date]['combustivel_estimado'] = DataQualityRules.calculate_fuel_consistency(
+                km, speed_avg, movement_hours
+            )
+        
+        return daily_data
+    
+    @staticmethod  
+    def aggregate_weekly(df: pd.DataFrame) -> Dict:
+        """
+        Agrega dados por semana
+        """
+        if df.empty:
+            return {}
+        
+        df_clean = DataQualityRules.validate_telemetry_consistency(df)
+        
+        weekly_data = {}
+        df_clean['week'] = pd.to_datetime(df_clean['data_evento']).dt.to_period('W')
+        
+        for week, week_df in df_clean.groupby('week'):
+            week_start = week.start_time.date()
+            week_end = week.end_time.date()
+            
+            weekly_data[f"{week_start} a {week_end}"] = {
+                'periodo': f"Semana de {week_start.strftime('%d/%m')} a {week_end.strftime('%d/%m')}",
+                'total_registros': len(week_df),
+                'km_total': week_df['odometro_periodo_km'].sum(),
+                'velocidade_max': week_df['velocidade_kmh'].max(),
+                'velocidade_media': week_df[week_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(week_df[week_df['velocidade_kmh'] > 0]) > 0 else 0,
+                'tempo_ligado_horas': len(week_df[week_df['ligado'] == True]) * 5 / 60,
+                'tempo_movimento_horas': len(week_df[week_df['em_movimento'] == True]) * 5 / 60,
+                'alertas_velocidade': len(week_df[week_df['velocidade_kmh'] > 80]),
+                'dias_operacao': len(week_df['data_evento'].dt.date.unique()),
+                'periodos_operacionais': week_df['periodo_operacional'].value_counts().to_dict()
+            }
+            
+            # Adiciona análise de produtividade semanal
+            km = weekly_data[f"{week_start} a {week_end}"]['km_total']
+            days = weekly_data[f"{week_start} a {week_end}"]['dias_operacao']
+            weekly_data[f"{week_start} a {week_end}"]['produtividade_km_dia'] = km / days if days > 0 else 0
+        
+        return weekly_data
+    
+    @staticmethod
+    def compute_vehicle_rankings(vehicles_data: Dict) -> Dict:
+        """
+        Computa rankings de veículos para destacar melhores e piores performances
+        """
+        if not vehicles_data:
+            return {}
+        
+        rankings = {
+            'melhor_km': [],
+            'pior_km': [],
+            'melhor_eficiencia': [],
+            'pior_eficiencia': [],
+            'mais_alertas': [],
+            'menos_alertas': []
+        }
+        
+        # Prepara dados para ranking
+        vehicles_metrics = []
+        for placa, data in vehicles_data.items():
+            if data.get('km_total', 0) > 0:  # Só considera veículos com movimento real
+                vehicles_metrics.append({
+                    'placa': placa,
+                    'km_total': data.get('km_total', 0),
+                    'eficiencia': data.get('km_total', 0) / max(data.get('tempo_movimento_horas', 1), 1),
+                    'alertas_velocidade': data.get('alertas_velocidade', 0),
+                    'combustivel_estimado': data.get('combustivel_estimado', 0)
+                })
+        
+        if vehicles_metrics:
+            # Ranking por KM
+            sorted_by_km = sorted(vehicles_metrics, key=lambda x: x['km_total'], reverse=True)
+            rankings['melhor_km'] = sorted_by_km[:3]
+            rankings['pior_km'] = sorted_by_km[-3:]
+            
+            # Ranking por eficiência
+            sorted_by_efficiency = sorted(vehicles_metrics, key=lambda x: x['eficiencia'], reverse=True)
+            rankings['melhor_eficiencia'] = sorted_by_efficiency[:3]
+            rankings['pior_eficiencia'] = sorted_by_efficiency[-3:]
+            
+            # Ranking por alertas
+            sorted_by_alerts = sorted(vehicles_metrics, key=lambda x: x['alertas_velocidade'])
+            rankings['menos_alertas'] = sorted_by_alerts[:3]
+            rankings['mais_alertas'] = sorted_by_alerts[-3:]
+        
+        return rankings
+
+
+# ==============================
+# SISTEMA DE HIGHLIGHTS E INSIGHTS
+# ==============================
+
+class HighlightGenerator:
+    """
+    Gerador de insights e highlights para relatórios
+    """
+    
+    @staticmethod
+    def compute_highlights(daily_data: Dict, weekly_data: Dict, vehicles_data: Dict) -> Dict:
+        """
+        Computa highlights principais baseado nos dados agregados
+        """
+        highlights = {
+            'piores_dias': [],
+            'melhores_dias': [],
+            'melhor_veiculo': None,
+            'pior_veiculo': None,
+            'insights_gerais': [],
+            'alertas_importantes': []
+        }
+        
+        # Análise dos piores e melhores dias
+        if daily_data:
+            day_metrics = []
+            for date, metrics in daily_data.items():
+                if metrics.get('km_total', 0) > 0:  # Só considera dias com movimento
+                    efficiency = metrics.get('km_total', 0) / max(metrics.get('tempo_movimento_horas', 1), 1)
+                    day_metrics.append({
+                        'data': date,
+                        'km_total': metrics.get('km_total', 0),
+                        'eficiencia': efficiency,
+                        'alertas': metrics.get('alertas_velocidade', 0),
+                        'tempo_movimento': metrics.get('tempo_movimento_horas', 0)
+                    })
+            
+            if day_metrics:
+                # Piores dias (menos KM ou mais alertas)
+                worst_by_km = sorted(day_metrics, key=lambda x: x['km_total'])[:3]
+                worst_by_alerts = sorted(day_metrics, key=lambda x: x['alertas'], reverse=True)[:3]
+                
+                highlights['piores_dias'] = {
+                    'menor_km': worst_by_km,
+                    'mais_alertas': worst_by_alerts
+                }
+                
+                # Melhores dias (mais KM, maior eficiência)
+                best_by_km = sorted(day_metrics, key=lambda x: x['km_total'], reverse=True)[:3]
+                best_by_efficiency = sorted(day_metrics, key=lambda x: x['eficiencia'], reverse=True)[:3]
+                
+                highlights['melhores_dias'] = {
+                    'maior_km': best_by_km,
+                    'maior_eficiencia': best_by_efficiency
+                }
+        
+        # Rankings de veículos
+        vehicle_rankings = PeriodAggregator.compute_vehicle_rankings(vehicles_data)
+        if vehicle_rankings:
+            if vehicle_rankings.get('melhor_km'):
+                highlights['melhor_veiculo'] = vehicle_rankings['melhor_km'][0]
+            if vehicle_rankings.get('pior_km'):
+                highlights['pior_veiculo'] = vehicle_rankings['pior_km'][-1]
+        
+        # Insights gerais baseados nos dados
+        highlights['insights_gerais'] = HighlightGenerator._generate_insights(
+            daily_data, weekly_data, vehicles_data
+        )
+        
+        # Alertas importantes
+        highlights['alertas_importantes'] = HighlightGenerator._generate_alerts(
+            daily_data, weekly_data, vehicles_data
+        )
+        
+        return highlights
+    
+    @staticmethod
+    def _generate_insights(daily_data: Dict, weekly_data: Dict, vehicles_data: Dict) -> List[str]:
+        """
+        Gera insights automáticos baseados nos padrões dos dados
+        """
+        insights = []
+        
+        if daily_data:
+            total_days = len(daily_data)
+            days_with_movement = len([d for d in daily_data.values() if d.get('km_total', 0) > 0])
+            
+            if days_with_movement > 0:
+                utilization_rate = days_with_movement / total_days
+                if utilization_rate < 0.5:
+                    insights.append(f"Taxa de utilização baixa: apenas {utilization_rate:.1%} dos dias tiveram movimento")
+                elif utilization_rate > 0.9:
+                    insights.append(f"Excelente taxa de utilização: {utilization_rate:.1%} dos dias com operação")
+                
+                # Análise de velocidade
+                avg_speeds = [d.get('velocidade_media', 0) for d in daily_data.values() if d.get('km_total', 0) > 0]
+                if avg_speeds:
+                    overall_avg_speed = sum(avg_speeds) / len(avg_speeds)
+                    if overall_avg_speed > 60:
+                        insights.append(f"Velocidade média elevada: {overall_avg_speed:.1f} km/h - revisar padrões de condução")
+                    elif overall_avg_speed < 20:
+                        insights.append(f"Velocidade média baixa: {overall_avg_speed:.1f} km/h - possível operação urbana intensiva")
+                
+                # Análise de alertas
+                total_alerts = sum([d.get('alertas_velocidade', 0) for d in daily_data.values()])
+                if total_alerts > 0:
+                    alert_rate = total_alerts / days_with_movement
+                    if alert_rate > 5:
+                        insights.append(f"Alto índice de alertas de velocidade: {alert_rate:.1f} por dia operacional")
+        
+        if weekly_data:
+            # Análise de produtividade semanal
+            weekly_productivities = [w.get('produtividade_km_dia', 0) for w in weekly_data.values()]
+            if weekly_productivities:
+                avg_productivity = sum(weekly_productivities) / len(weekly_productivities)
+                insights.append(f"Produtividade média: {avg_productivity:.1f} km por dia operacional")
+        
+        if vehicles_data and len(vehicles_data) > 1:
+            # Análise de disparidade entre veículos
+            km_totals = [v.get('km_total', 0) for v in vehicles_data.values() if v.get('km_total', 0) > 0]
+            if km_totals and len(km_totals) > 1:
+                max_km = max(km_totals)
+                min_km = min(km_totals)
+                if max_km > 0 and min_km > 0:
+                    disparity = max_km / min_km
+                    if disparity > 3:
+                        insights.append(f"Grande disparidade na utilização: veículo mais usado fez {disparity:.1f}x mais quilometragem")
+        
+        return insights
+    
+    @staticmethod
+    def _generate_alerts(daily_data: Dict, weekly_data: Dict, vehicles_data: Dict) -> List[str]:
+        """
+        Gera alertas importantes baseados em padrões problemáticos
+        """
+        alerts = []
+        
+        # Alertas baseados em dados diários
+        if daily_data:
+            for date, data in daily_data.items():
+                alerts_count = data.get('alertas_velocidade', 0)
+                if alerts_count > 10:
+                    alerts.append(f"⚠️ {date.strftime('%d/%m/%Y')}: {alerts_count} alertas de velocidade em um dia")
+                
+                km_total = data.get('km_total', 0)
+                movement_time = data.get('tempo_movimento_horas', 0)
+                if km_total > 0 and movement_time > 12:
+                    alerts.append(f"⚠️ {date.strftime('%d/%m/%Y')}: Operação prolongada - {movement_time:.1f} horas de movimento")
+        
+        # Alertas baseados em veículos
+        if vehicles_data:
+            for placa, data in vehicles_data.items():
+                alerts_count = data.get('alertas_velocidade', 0)
+                km_total = data.get('km_total', 0)
+                
+                if km_total > 0 and alerts_count > 0:
+                    alert_rate = alerts_count / (km_total / 100)  # alertas por 100km
+                    if alert_rate > 5:
+                        alerts.append(f"🚨 {placa}: Alto índice de alertas - {alert_rate:.1f} por 100km")
+                
+                fuel_estimated = data.get('combustivel_estimado')
+                if fuel_estimated and fuel_estimated > 100:  # Consumo muito alto
+                    alerts.append(f"⛽ {placa}: Consumo elevado estimado - {fuel_estimated:.1f}L")
+        
+        return alerts
+
+
 class TelemetryAnalyzer:
     """Classe principal para análise de dados de telemetria"""
     
