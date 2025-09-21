@@ -184,7 +184,7 @@ class PeriodAggregator:
                 'tempo_ligado_horas': len(week_df[week_df['ligado'] == True]) * 5 / 60,
                 'tempo_movimento_horas': len(week_df[week_df['em_movimento'] == True]) * 5 / 60,
                 'alertas_velocidade': len(week_df[week_df['velocidade_kmh'] > 80]),
-                'dias_operacao': len(week_df['data_evento'].dt.date.unique()),
+                'dias_operacao': pd.to_datetime(week_df['data_evento']).dt.date.nunique(),
                 'periodos_operacionais': week_df['periodo_operacional'].value_counts().to_dict()
             }
             
