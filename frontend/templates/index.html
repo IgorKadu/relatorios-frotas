@@ -33,6 +33,9 @@
                     <li class="nav-item">
                         <a class="nav-link" href="#analise">Análise</a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#perfis-horario">Perfis de Horário</a>
+                    </li>
                 </ul>
             </div>
         </div>
@@ -351,6 +354,147 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Perfis de Horário Section -->
+    <div id="perfis-horario" class="content-section" style="display: none;">
+        <div class="row">
+            <div class="col-12">
+                <h2><i class="fas fa-clock me-2"></i>Perfis de Horário</h2>
+                <p class="text-muted">Configure perfis de horário personalizados para cada cliente. Defina períodos operacionais, cores e descrições que serão utilizados nos relatórios PDF.</p>
+            </div>
+        </div>
+
+        <!-- Cliente Selection -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-user me-2"></i>Selecionar Cliente</h5>
+                    </div>
+                    <div class="card-body">
+                        <select id="cliente-perfil-select" class="form-select">
+                            <option value="">Selecione um cliente...</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-plus me-2"></i>Novo Perfil</h5>
+                    </div>
+                    <div class="card-body">
+                        <button id="novo-perfil-btn" class="btn btn-primary" disabled>
+                            <i class="fas fa-plus me-2"></i>Criar Novo Perfil
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Perfis List -->
+        <div class="row" id="perfis-container" style="display: none;">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-list me-2"></i>Perfis de Horário</h5>
+                        <span class="badge bg-info" id="perfis-count">0 perfis</span>
+                    </div>
+                    <div class="card-body">
+                        <div id="perfis-list">
+                            <!-- Perfis serão carregados aqui via JavaScript -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para Criar/Editar Perfil -->
+    <div class="modal fade" id="perfilModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="perfilModalTitle">
+                        <i class="fas fa-clock me-2"></i>Novo Perfil de Horário
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="perfil-form">
+                    <div class="modal-body">
+                        <input type="hidden" id="perfil-id">
+                        <input type="hidden" id="perfil-cliente-id">
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="perfil-nome" class="form-label">Nome do Perfil *</label>
+                                <input type="text" class="form-control" id="perfil-nome" required 
+                                       placeholder="Ex: Manhã, Meio-dia, Tarde">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="perfil-tipo" class="form-label">Tipo de Período *</label>
+                                <select class="form-select" id="perfil-tipo" required>
+                                    <option value="operacional">Operacional</option>
+                                    <option value="fora_horario">Fora do Horário</option>
+                                    <option value="especial">Especial</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="perfil-descricao" class="form-label">Descrição</label>
+                            <input type="text" class="form-control" id="perfil-descricao" 
+                                   placeholder="Ex: Período operacional matutino">
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="perfil-hora-inicio" class="form-label">Hora de Início *</label>
+                                <input type="time" class="form-control" id="perfil-hora-inicio" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="perfil-hora-fim" class="form-label">Hora de Fim *</label>
+                                <input type="time" class="form-control" id="perfil-hora-fim" required>
+                            </div>
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="perfil-cor" class="form-label">Cor no Relatório</label>
+                                <div class="d-flex align-items-center">
+                                    <input type="color" class="form-control form-control-color me-2" 
+                                           id="perfil-cor" value="#28a745" style="width: 50px;">
+                                    <input type="text" class="form-control" id="perfil-cor-hex" 
+                                           value="#28a745" placeholder="#28a745">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Status</label>
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="perfil-ativo" checked>
+                                    <label class="form-check-label" for="perfil-ativo">
+                                        Perfil Ativo
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle me-2"></i>
+                            <strong>Dica:</strong> Os perfis de horário serão utilizados nos relatórios PDF para categorizar e 
+                            colorir os períodos operacionais de acordo com sua configuração.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="btn btn-primary" id="salvar-perfil-btn">
+                            <i class="fas fa-save me-2"></i>Salvar Perfil
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>

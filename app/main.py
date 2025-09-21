@@ -7,14 +7,14 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
-from datetime import datetime, timedelta
-from typing import Optional, List, Optional
+from datetime import datetime, timedelta, time
+from typing import Optional, List
 import os
 import shutil
 import tempfile
 from pathlib import Path
 
-from .models import init_database, get_session, Cliente, Veiculo, PosicaoHistorica, RelatorioGerado
+from .models import init_database, get_session, Cliente, Veiculo, PosicaoHistorica, RelatorioGerado, PerfilHorario
 from .utils import CSVProcessor, convert_numpy_types
 from .services import ReportGenerator, TelemetryAnalyzer
 from .reports import generate_consolidated_vehicle_report
@@ -534,6 +534,194 @@ async def listar_relatorios(veiculo: Optional[str] = None, data: Optional[str] =
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Rotas para gerenciamento de perfis de horário
+@app.get("/api/perfis-horario/{cliente_id}")
+async def listar_perfis_horario(cliente_id: int):
+    """Lista todos os perfis de horário de um cliente"""
+    session = get_session()
+    try:
+        perfis = session.query(PerfilHorario).filter_by(cliente_id=cliente_id).order_by(PerfilHorario.hora_inicio).all()
+        return [
+            {
+                "id": perfil.id,
+                "nome": perfil.nome,
+                "descricao": perfil.descricao,
+                "hora_inicio": perfil.hora_inicio.strftime('%H:%M'),
+                "hora_fim": perfil.hora_fim.strftime('%H:%M'),
+                "tipo_periodo": perfil.tipo_periodo,
+                "ativo": perfil.ativo,
+                "cor_relatorio": perfil.cor_relatorio,
+                "created_at": perfil.created_at.isoformat()
+            }
+            for perfil in perfis
+        ]
+    finally:
+        session.close()
+
+@app.post("/api/perfis-horario")
+async def criar_perfil_horario(
+    cliente_id: int = Form(...),
+    nome: str = Form(...),
+    descricao: str = Form(""),
+    hora_inicio: str = Form(...),  # formato HH:MM
+    hora_fim: str = Form(...),     # formato HH:MM
+    tipo_periodo: str = Form("operacional"),
+    cor_relatorio: str = Form("#28a745")
+):
+    """Cria um novo perfil de horário para um cliente"""
+    session = get_session()
+    try:
+        # Validar cliente existe
+        cliente = session.query(Cliente).filter_by(id=cliente_id).first()
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        
+        # Converter horários
+        try:
+            hora_inicio_obj = datetime.strptime(hora_inicio, '%H:%M').time()
+            hora_fim_obj = datetime.strptime(hora_fim, '%H:%M').time()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de horário inválido. Use HH:MM")
+        
+        # Verificar se nome já existe para este cliente
+        nome_existe = session.query(PerfilHorario).filter_by(
+            cliente_id=cliente_id, 
+            nome=nome
+        ).first()
+        if nome_existe:
+            raise HTTPException(status_code=400, detail="Já existe um perfil com este nome para este cliente")
+        
+        # Criar perfil
+        perfil = PerfilHorario(
+            cliente_id=cliente_id,
+            nome=nome,
+            descricao=descricao,
+            hora_inicio=hora_inicio_obj,
+            hora_fim=hora_fim_obj,
+            tipo_periodo=tipo_periodo,
+            cor_relatorio=cor_relatorio
+        )
+        session.add(perfil)
+        session.commit()
+        
+        return {
+            "success": True,
+            "message": "Perfil de horário criado com sucesso",
+            "perfil_id": perfil.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.put("/api/perfis-horario/{perfil_id}")
+async def atualizar_perfil_horario(
+    perfil_id: int,
+    nome: str = Form(...),
+    descricao: str = Form(""),
+    hora_inicio: str = Form(...),  # formato HH:MM
+    hora_fim: str = Form(...),     # formato HH:MM
+    tipo_periodo: str = Form("operacional"),
+    ativo: bool = Form(True),
+    cor_relatorio: str = Form("#28a745")
+):
+    """Atualiza um perfil de horário existente"""
+    session = get_session()
+    try:
+        perfil = session.query(PerfilHorario).filter_by(id=perfil_id).first()
+        if not perfil:
+            raise HTTPException(status_code=404, detail="Perfil de horário não encontrado")
+        
+        # Converter horários
+        try:
+            hora_inicio_obj = datetime.strptime(hora_inicio, '%H:%M').time()
+            hora_fim_obj = datetime.strptime(hora_fim, '%H:%M').time()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de horário inválido. Use HH:MM")
+        
+        # Verificar se nome já existe para este cliente (exceto o próprio perfil)
+        nome_existe = session.query(PerfilHorario).filter(
+            PerfilHorario.cliente_id == perfil.cliente_id,
+            PerfilHorario.nome == nome,
+            PerfilHorario.id != perfil_id
+        ).first()
+        if nome_existe:
+            raise HTTPException(status_code=400, detail="Já existe um perfil com este nome para este cliente")
+        
+        # Atualizar perfil
+        perfil.nome = nome
+        perfil.descricao = descricao
+        perfil.hora_inicio = hora_inicio_obj
+        perfil.hora_fim = hora_fim_obj
+        perfil.tipo_periodo = tipo_periodo
+        perfil.ativo = ativo
+        perfil.cor_relatorio = cor_relatorio
+        perfil.updated_at = datetime.utcnow()
+        
+        session.commit()
+        
+        return {
+            "success": True,
+            "message": "Perfil de horário atualizado com sucesso"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.delete("/api/perfis-horario/{perfil_id}")
+async def deletar_perfil_horario(perfil_id: int):
+    """Deleta um perfil de horário"""
+    session = get_session()
+    try:
+        perfil = session.query(PerfilHorario).filter_by(id=perfil_id).first()
+        if not perfil:
+            raise HTTPException(status_code=404, detail="Perfil de horário não encontrado")
+        
+        session.delete(perfil)
+        session.commit()
+        
+        return {
+            "success": True,
+            "message": "Perfil de horário deletado com sucesso"
+        }
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.patch("/api/perfis-horario/{perfil_id}/toggle")
+async def toggle_perfil_horario(perfil_id: int):
+    """Ativa/desativa um perfil de horário"""
+    session = get_session()
+    try:
+        perfil = session.query(PerfilHorario).filter_by(id=perfil_id).first()
+        if not perfil:
+            raise HTTPException(status_code=404, detail="Perfil de horário não encontrado")
+        
+        perfil.ativo = not perfil.ativo
+        perfil.updated_at = datetime.utcnow()
+        session.commit()
+        
+        status = "ativado" if perfil.ativo else "desativado"
+        return {
+            "success": True,
+            "message": f"Perfil de horário {status} com sucesso",
+            "ativo": perfil.ativo
+        }
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
 # Rotas para dashboard
 @app.get("/api/dashboard/resumo")
 async def dashboard_resumo():
@@ -629,8 +817,8 @@ async def generate_enhanced_report(
         os.makedirs(REPORTS_DIR, exist_ok=True)
         
         # Gerar relatório aprimorado
-        from .reports import PDFReportGenerator
-        generator = PDFReportGenerator()
+        from .reports import ConsolidatedPDFGenerator
+        generator = ConsolidatedPDFGenerator()
         result = generator.generate_enhanced_pdf_report(
             placa=placa,
             data_inicio=data_inicio_dt,

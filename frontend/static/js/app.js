@@ -62,6 +62,9 @@ class TelemetriaApp {
             case 'analise':
                 this.populateVeiculoSelects();
                 break;
+            case 'perfis-horario':
+                await this.showPerfisHorario();
+                break;
         }
     }
     
@@ -739,6 +742,273 @@ class TelemetriaApp {
                 alertDiv.remove();
             }
         }, 5000);
+    }
+    
+    // ====== PERFIS DE HORÁRIO ======
+    
+    async showPerfisHorario() {
+        await this.loadClientes();
+        this.populateClientePerfisSelect();
+        this.setupPerfisEventListeners();
+    }
+    
+    populateClientePerfisSelect() {
+        const select = document.getElementById('cliente-perfil-select');
+        select.innerHTML = '<option value="">Selecione um cliente...</option>';
+        
+        this.clientes.forEach(cliente => {
+            const option = document.createElement('option');
+            option.value = cliente.id;
+            option.textContent = cliente.nome;
+            select.appendChild(option);
+        });
+    }
+    
+    setupPerfisEventListeners() {
+        // Cliente selection change
+        document.getElementById('cliente-perfil-select').addEventListener('change', (e) => {
+            const clienteId = e.target.value;
+            const novoPerfil = document.getElementById('novo-perfil-btn');
+            const container = document.getElementById('perfis-container');
+            
+            if (clienteId) {
+                novoPerfil.disabled = false;
+                this.loadPerfilsHorario(clienteId);
+                container.style.display = 'block';
+            } else {
+                novoPerfil.disabled = true;
+                container.style.display = 'none';
+            }
+        });
+        
+        // Novo perfil button
+        document.getElementById('novo-perfil-btn').addEventListener('click', () => {
+            this.openPerfilModal();
+        });
+        
+        // Perfil form submission
+        document.getElementById('perfil-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handlePerfilSubmit();
+        });
+        
+        // Color picker sync
+        document.getElementById('perfil-cor').addEventListener('input', (e) => {
+            document.getElementById('perfil-cor-hex').value = e.target.value;
+        });
+        
+        document.getElementById('perfil-cor-hex').addEventListener('input', (e) => {
+            document.getElementById('perfil-cor').value = e.target.value;
+        });
+    }
+    
+    async loadPerfilsHorario(clienteId) {
+        try {
+            const response = await axios.get(`/api/perfis-horario/${clienteId}`);
+            this.renderPerfisHorario(response.data);
+        } catch (error) {
+            console.error('Erro ao carregar perfis:', error);
+            this.showToast('Erro ao carregar perfis de horário', 'error');
+        }
+    }
+    
+    renderPerfisHorario(perfis) {
+        const container = document.getElementById('perfis-list');
+        const count = document.getElementById('perfis-count');
+        
+        count.textContent = `${perfis.length} perfis`;
+        
+        if (perfis.length === 0) {
+            container.innerHTML = `
+                <div class="text-center text-muted py-4">
+                    <i class="fas fa-clock fa-3x mb-3"></i>
+                    <p>Nenhum perfil de horário configurado para este cliente.</p>
+                    <p>Clique em "Criar Novo Perfil" para começar.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        const perfisHtml = perfis.map(perfil => `
+            <div class="card mb-3 ${!perfil.ativo ? 'opacity-50' : ''}">
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col-md-2">
+                            <div class="d-flex align-items-center">
+                                <div style="width: 20px; height: 20px; background-color: ${perfil.cor_relatorio}; border-radius: 3px; margin-right: 10px;"></div>
+                                <strong>${perfil.nome}</strong>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Horário:</small><br>
+                            <span class="badge bg-secondary">${perfil.hora_inicio} - ${perfil.hora_fim}</span>
+                        </div>
+                        <div class="col-md-2">
+                            <small class="text-muted">Tipo:</small><br>
+                            <span class="badge ${perfil.tipo_periodo === 'operacional' ? 'bg-success' : perfil.tipo_periodo === 'fora_horario' ? 'bg-warning' : 'bg-info'}">${this.formatTipoPeriodo(perfil.tipo_periodo)}</span>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Descrição:</small><br>
+                            <span>${perfil.descricao || 'Sem descrição'}</span>
+                        </div>
+                        <div class="col-md-2 text-end">
+                            <div class="btn-group" role="group">
+                                <button class="btn btn-outline-primary btn-sm" onclick="telemetriaApp.editPerfil(${perfil.id})" title="Editar">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="btn btn-outline-${perfil.ativo ? 'warning' : 'success'} btn-sm" 
+                                        onclick="telemetriaApp.togglePerfil(${perfil.id})" 
+                                        title="${perfil.ativo ? 'Desativar' : 'Ativar'}">
+                                    <i class="fas fa-${perfil.ativo ? 'pause' : 'play'}"></i>
+                                </button>
+                                <button class="btn btn-outline-danger btn-sm" onclick="telemetriaApp.deletePerfil(${perfil.id})" title="Excluir">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+        
+        container.innerHTML = perfisHtml;
+    }
+    
+    formatTipoPeriodo(tipo) {
+        switch(tipo) {
+            case 'operacional': return 'Operacional';
+            case 'fora_horario': return 'Fora do Horário';
+            case 'especial': return 'Especial';
+            default: return tipo;
+        }
+    }
+    
+    openPerfilModal(perfilData = null) {
+        const modal = new bootstrap.Modal(document.getElementById('perfilModal'));
+        const title = document.getElementById('perfilModalTitle');
+        const form = document.getElementById('perfil-form');
+        
+        if (perfilData) {
+            // Editing existing perfil
+            title.innerHTML = '<i class="fas fa-edit me-2"></i>Editar Perfil de Horário';
+            this.populatePerfilForm(perfilData);
+        } else {
+            // Creating new perfil
+            title.innerHTML = '<i class="fas fa-plus me-2"></i>Novo Perfil de Horário';
+            form.reset();
+            const clienteId = document.getElementById('cliente-perfil-select').value;
+            document.getElementById('perfil-cliente-id').value = clienteId;
+            document.getElementById('perfil-cor').value = '#28a745';
+            document.getElementById('perfil-cor-hex').value = '#28a745';
+            document.getElementById('perfil-ativo').checked = true;
+        }
+        
+        modal.show();
+    }
+    
+    populatePerfilForm(perfil) {
+        document.getElementById('perfil-id').value = perfil.id;
+        document.getElementById('perfil-cliente-id').value = perfil.cliente_id;
+        document.getElementById('perfil-nome').value = perfil.nome;
+        document.getElementById('perfil-descricao').value = perfil.descricao || '';
+        document.getElementById('perfil-hora-inicio').value = perfil.hora_inicio;
+        document.getElementById('perfil-hora-fim').value = perfil.hora_fim;
+        document.getElementById('perfil-tipo').value = perfil.tipo_periodo;
+        document.getElementById('perfil-cor').value = perfil.cor_relatorio;
+        document.getElementById('perfil-cor-hex').value = perfil.cor_relatorio;
+        document.getElementById('perfil-ativo').checked = perfil.ativo;
+    }
+    
+    async handlePerfilSubmit() {
+        const formData = new FormData();
+        const perfilId = document.getElementById('perfil-id').value;
+        
+        formData.append('cliente_id', document.getElementById('perfil-cliente-id').value);
+        formData.append('nome', document.getElementById('perfil-nome').value);
+        formData.append('descricao', document.getElementById('perfil-descricao').value);
+        formData.append('hora_inicio', document.getElementById('perfil-hora-inicio').value);
+        formData.append('hora_fim', document.getElementById('perfil-hora-fim').value);
+        formData.append('tipo_periodo', document.getElementById('perfil-tipo').value);
+        formData.append('cor_relatorio', document.getElementById('perfil-cor-hex').value);
+        formData.append('ativo', document.getElementById('perfil-ativo').checked);
+        
+        try {
+            let response;
+            if (perfilId) {
+                // Update existing perfil
+                response = await axios.put(`/api/perfis-horario/${perfilId}`, formData);
+            } else {
+                // Create new perfil
+                response = await axios.post('/api/perfis-horario', formData);
+            }
+            
+            if (response.data.success) {
+                this.showSuccess(response.data.message);
+                const modal = bootstrap.Modal.getInstance(document.getElementById('perfilModal'));
+                modal.hide();
+                
+                // Reload perfis
+                const clienteId = document.getElementById('cliente-perfil-select').value;
+                this.loadPerfilsHorario(clienteId);
+            }
+        } catch (error) {
+            console.error('Erro ao salvar perfil:', error);
+            const message = error.response?.data?.detail || 'Erro ao salvar perfil';
+            this.showError(message);
+        }
+    }
+    
+    async editPerfil(perfilId) {
+        try {
+            const clienteId = document.getElementById('cliente-perfil-select').value;
+            const response = await axios.get(`/api/perfis-horario/${clienteId}`);
+            const perfil = response.data.find(p => p.id === perfilId);
+            
+            if (perfil) {
+                this.openPerfilModal(perfil);
+            }
+        } catch (error) {
+            console.error('Erro ao carregar perfil:', error);
+            this.showError('Erro ao carregar dados do perfil');
+        }
+    }
+    
+    async togglePerfil(perfilId) {
+        try {
+            const response = await axios.patch(`/api/perfis-horario/${perfilId}/toggle`);
+            
+            if (response.data.success) {
+                this.showSuccess(response.data.message);
+                
+                // Reload perfis
+                const clienteId = document.getElementById('cliente-perfil-select').value;
+                this.loadPerfilsHorario(clienteId);
+            }
+        } catch (error) {
+            console.error('Erro ao alterar status do perfil:', error);
+            this.showError('Erro ao alterar status do perfil');
+        }
+    }
+    
+    async deletePerfil(perfilId) {
+        if (!confirm('Tem certeza que deseja excluir este perfil de horário?')) {
+            return;
+        }
+        
+        try {
+            const response = await axios.delete(`/api/perfis-horario/${perfilId}`);
+            
+            if (response.data.success) {
+                this.showSuccess(response.data.message);
+                
+                // Reload perfis
+                const clienteId = document.getElementById('cliente-perfil-select').value;
+                this.loadPerfilsHorario(clienteId);
+            }
+        } catch (error) {
+            console.error('Erro ao excluir perfil:', error);
+            this.showError('Erro ao excluir perfil');
+        }
     }
 }
 

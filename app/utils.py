@@ -54,12 +54,13 @@ class CSVProcessor:
             'Imagem', 'Tensão', 'Bloqueado'
         ]
         
-        # Definição dos períodos operacionais
+        # Definição dos períodos operacionais (padrão - fallback)
         self.periodos_operacionais = {
             'manha': (time(4, 0), time(7, 0)),
             'meio_dia': (time(10, 50), time(13, 0)),
             'tarde': (time(16, 50), time(19, 0))
         }
+        self._cached_perfis = {}  # Cache de perfis por cliente
         
         # Parâmetros configuráveis
         self.speed_outlier_threshold = 220  # km/h
@@ -659,15 +660,83 @@ class CSVProcessor:
         
         return df_clean
     
-    def classify_operational_period(self, timestamp: datetime) -> str:
+    def load_perfis_cliente(self, cliente_id: int) -> Dict:
+        """Carrega perfis de horário personalizados do cliente"""
+        if cliente_id in self._cached_perfis:
+            return self._cached_perfis[cliente_id]
+            
+        try:
+            from .models import get_session, PerfilHorario
+            session = get_session()
+            try:
+                perfis = session.query(PerfilHorario).filter_by(
+                    cliente_id=cliente_id, 
+                    ativo=True
+                ).all()
+                
+                perfis_dict = {}
+                for perfil in perfis:
+                    perfis_dict[perfil.nome.lower().replace(' ', '_')] = {
+                        'inicio': perfil.hora_inicio,
+                        'fim': perfil.hora_fim,
+                        'tipo': perfil.tipo_periodo,
+                        'cor': perfil.cor_relatorio,
+                        'nome': perfil.nome,
+                        'descricao': perfil.descricao
+                    }
+                
+                self._cached_perfis[cliente_id] = perfis_dict
+                return perfis_dict
+            finally:
+                session.close()
+        except Exception as e:
+            print(f"Erro ao carregar perfis do cliente {cliente_id}: {e}")
+            return {}
+
+    def classify_operational_period(self, timestamp: datetime, cliente_id: Optional[int] = None) -> str:
         """
-        Classifica um timestamp em período operacional
+        Classifica um timestamp em período operacional usando perfis personalizados do cliente
         """
         if timestamp.weekday() >= 5:  # Sábado=5, Domingo=6
             return 'final_semana'
         
         current_time = timestamp.time()
         
+        # Tenta usar perfis personalizados do cliente
+        if cliente_id:
+            perfis_cliente = self.load_perfis_cliente(cliente_id)
+            if perfis_cliente:
+                # Verifica períodos operacionais personalizados
+                for nome_perfil, config in perfis_cliente.items():
+                    if config['tipo'] == 'operacional':
+                        inicio = config['inicio']
+                        fim = config['fim']
+                        
+                        # Trata horário que cruza meia-noite (ex: 19:00 - 04:00)
+                        if inicio <= fim:
+                            if inicio <= current_time <= fim:
+                                return nome_perfil
+                        else:
+                            if current_time >= inicio or current_time <= fim:
+                                return nome_perfil
+                
+                # Se não encontrou período operacional, verifica outros tipos
+                for nome_perfil, config in perfis_cliente.items():
+                    if config['tipo'] in ['fora_horario', 'especial']:
+                        inicio = config['inicio']
+                        fim = config['fim']
+                        
+                        if inicio <= fim:
+                            if inicio <= current_time <= fim:
+                                return nome_perfil
+                        else:
+                            if current_time >= inicio or current_time <= fim:
+                                return nome_perfil
+                
+                # Se não encontrou nenhum período, é fora do horário
+                return 'fora_horario'
+        
+        # Fallback para períodos padrão se não houver perfis personalizados
         for periodo, (inicio, fim) in self.periodos_operacionais.items():
             if inicio <= current_time <= fim:
                 return periodo

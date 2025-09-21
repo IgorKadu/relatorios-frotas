@@ -2,11 +2,11 @@
 Modelos de dados para o sistema de relatórios de telemetria veicular.
 """
 
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey, Time
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from sqlalchemy import create_engine
-from datetime import datetime
+from datetime import datetime, time
 import os
 
 Base = declarative_base()
@@ -24,6 +24,26 @@ class Cliente(Base):
     
     # Relacionamentos
     veiculos = relationship("Veiculo", back_populates="cliente")
+    perfis_horario = relationship("PerfilHorario", back_populates="cliente")
+
+class PerfilHorario(Base):
+    """Modelo para armazenar perfis de horário personalizados por cliente"""
+    __tablename__ = 'perfis_horario'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cliente_id = Column(Integer, ForeignKey('clientes.id'), nullable=False)
+    nome = Column(String(100), nullable=False)  # Ex: "Manhã", "Meio-dia", "Tarde"
+    descricao = Column(String(255))  # Ex: "Período matutino"
+    hora_inicio = Column(Time, nullable=False)  # Ex: 04:00
+    hora_fim = Column(Time, nullable=False)     # Ex: 07:00
+    tipo_periodo = Column(String(50), default='operacional')  # operacional, fora_horario, especial
+    ativo = Column(Boolean, default=True)
+    cor_relatorio = Column(String(7), default='#28a745')  # Cor hexadecimal para relatórios
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relacionamentos
+    cliente = relationship("Cliente", back_populates="perfis_horario")
 
 class Veiculo(Base):
     """Modelo para armazenar dados dos veículos"""
@@ -160,6 +180,69 @@ def init_database():
             session.add(cliente_jandaia)
             session.commit()
             print("Cliente padrão JANDAIA criado.")
+            
+            # Cria perfis de horário padrão para o cliente JANDAIA
+            perfis_padrao = [
+                PerfilHorario(
+                    cliente_id=cliente_jandaia.id,
+                    nome="Manhã",
+                    descricao="Período operacional matutino",
+                    hora_inicio=time(4, 0),
+                    hora_fim=time(7, 0),
+                    tipo_periodo="operacional",
+                    cor_relatorio="#28a745"
+                ),
+                PerfilHorario(
+                    cliente_id=cliente_jandaia.id,
+                    nome="Meio-dia",
+                    descricao="Período operacional do meio-dia",
+                    hora_inicio=time(10, 50),
+                    hora_fim=time(13, 0),
+                    tipo_periodo="operacional",
+                    cor_relatorio="#17a2b8"
+                ),
+                PerfilHorario(
+                    cliente_id=cliente_jandaia.id,
+                    nome="Tarde",
+                    descricao="Período operacional vespertino",
+                    hora_inicio=time(16, 50),
+                    hora_fim=time(19, 0),
+                    tipo_periodo="operacional",
+                    cor_relatorio="#007bff"
+                ),
+                PerfilHorario(
+                    cliente_id=cliente_jandaia.id,
+                    nome="Fora Horário Manhã",
+                    descricao="Fora do horário operacional matutino",
+                    hora_inicio=time(7, 0),
+                    hora_fim=time(10, 50),
+                    tipo_periodo="fora_horario",
+                    cor_relatorio="#ffc107"
+                ),
+                PerfilHorario(
+                    cliente_id=cliente_jandaia.id,
+                    nome="Fora Horário Tarde",
+                    descricao="Fora do horário operacional vespertino",
+                    hora_inicio=time(13, 0),
+                    hora_fim=time(16, 50),
+                    tipo_periodo="fora_horario",
+                    cor_relatorio="#fd7e14"
+                ),
+                PerfilHorario(
+                    cliente_id=cliente_jandaia.id,
+                    nome="Fora Horário Noite",
+                    descricao="Fora do horário operacional noturno",
+                    hora_inicio=time(19, 0),
+                    hora_fim=time(4, 0),
+                    tipo_periodo="fora_horario",
+                    cor_relatorio="#6f42c1"
+                )
+            ]
+            
+            for perfil in perfis_padrao:
+                session.add(perfil)
+            session.commit()
+            print("Perfis de horário padrão criados.")
         
         session.close()
         return True
