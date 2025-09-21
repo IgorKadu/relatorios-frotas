@@ -768,7 +768,25 @@ class CSVProcessor:
         metrics['tempo_parado'] = int(ignicao_stats.get('LP', 0))
         
         # Análise por período operacional
-        df['periodo_operacional'] = df['Data'].apply(self.classify_operational_period)
+        # Identifica cliente_id do DataFrame (assume que todos os registros são do mesmo cliente)
+        cliente_id = None
+        if 'Cliente' in df.columns and not df['Cliente'].empty:
+            primeiro_cliente = df['Cliente'].iloc[0]
+            # Aqui você pode implementar uma função para buscar cliente_id pelo nome
+            # Por enquanto vamos usar um mapeamento simples ou None para fallback
+            try:
+                from .models import get_session, Cliente
+                session = get_session()
+                try:
+                    cliente_obj = session.query(Cliente).filter_by(nome=primeiro_cliente).first()
+                    if cliente_obj:
+                        cliente_id = cliente_obj.id
+                finally:
+                    session.close()
+            except Exception as e:
+                print(f"Erro ao buscar cliente_id: {e}")
+        
+        df['periodo_operacional'] = df['Data'].apply(lambda x: self.classify_operational_period(x, cliente_id))
         periodo_stats = df['periodo_operacional'].value_counts()
         
         metrics['registros_manha'] = int(periodo_stats.get('manha', 0))

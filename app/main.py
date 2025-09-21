@@ -164,34 +164,8 @@ async def obter_veiculo(placa: str):
     finally:
         session.close()
 
-# Rotas para limpeza de dados
-@app.delete("/api/database/clear")
-async def clear_database():
-    """Limpa todos os dados do banco de dados (exceto clientes)"""
-    session = get_session()
-    try:
-        # Remove todas as posições históricas
-        session.query(PosicaoHistorica).delete()
-        
-        # Remove todos os veículos
-        session.query(Veiculo).delete()
-        
-        # Remove todos os relatórios gerados
-        session.query(RelatorioGerado).delete()
-        
-        session.commit()
-        
-        return convert_numpy_types({
-            "success": True,
-            "message": "Banco de dados limpo com sucesso!",
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        session.rollback()
-        raise HTTPException(status_code=500, detail=f"Erro ao limpar banco: {str(e)}")
-    finally:
-        session.close()
+# Endpoint removido por questões de segurança
+# Operações de limpeza de banco devem ser feitas via admin/CLI com autenticação apropriada
 
 # Rotas para upload e processamento de CSV
 @app.post("/api/upload-csv")
