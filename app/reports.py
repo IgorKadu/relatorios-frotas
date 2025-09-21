@@ -157,8 +157,16 @@ class PDFReportGenerator:
     
     def __init__(self):
         self.report_generator = ReportGenerator()
+        self.analyzer = None  # Será inicializado quando necessário
         self.styles = getSampleStyleSheet()
         self.setup_custom_styles()
+    
+    def _get_analyzer(self):
+        """Inicializa o analisador se necessário"""
+        if self.analyzer is None:
+            from .services import TelemetryAnalyzer
+            self.analyzer = TelemetryAnalyzer()
+        return self.analyzer
     
     def setup_custom_styles(self):
         """Configura estilos customizados para o PDF"""
@@ -1916,6 +1924,406 @@ class ConsolidatedPDFGenerator:
             f"<i>Relatório gerado em: {data_geracao}</i>",
             self.styles['ObservationStyle']
         ))
+    
+    def generate_enhanced_pdf_report(self, placa: str, data_inicio: datetime, data_fim: datetime, output_path: str) -> Dict:
+        """
+        Gera relatório PDF com estrutura melhorada: dados diários/semanais abrangentes e mensais gerais
+        """
+        try:
+            analyzer = self._get_analyzer()
+            
+            # Buscar dados do veículo
+            df = analyzer.get_vehicle_data(placa, data_inicio, data_fim)
+            
+            if df.empty:
+                return {
+                    'success': False,
+                    'error': 'Nenhum dado encontrado para o período especificado',
+                    'file_path': None
+                }
+            
+            # Determinar tipo de análise baseado no período
+            period_days = (data_fim - data_inicio).days + 1
+            
+            if period_days <= 7:
+                # Análise diária detalhada
+                analysis_type = 'daily'
+                period_analysis = analyzer.generate_daily_analysis(df, placa)
+            elif period_days <= 31:
+                # Análise semanal com gráficos
+                analysis_type = 'weekly'
+                period_analysis = analyzer.generate_weekly_analysis(df, placa)
+            else:
+                # Análise mensal com dados gerais
+                analysis_type = 'monthly'
+                period_analysis = analyzer.generate_monthly_analysis(df, placa)
+            
+            # Gerar métricas gerais
+            general_metrics = analyzer.generate_summary_metrics(df, placa)
+            
+            # Gerar insights
+            insights = self._generate_enhanced_insights(general_metrics, period_analysis, analysis_type)
+            
+            # Criar arquivo PDF
+            filename = f"relatorio_aprimorado_{placa}_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf"
+            filepath = os.path.join(output_path, filename)
+            
+            doc = SimpleDocTemplate(filepath, pagesize=A4,
+                                  rightMargin=72, leftMargin=72,
+                                  topMargin=72, bottomMargin=18)
+            
+            # Construir story do PDF
+            story = []
+            
+            # 1. Capa
+            story.extend(self.create_enhanced_cover_page(general_metrics, analysis_type, period_days))
+            
+            # 2. Sumário Executivo
+            story.extend(self.create_executive_summary(general_metrics, insights))
+            
+            # 3. Análise de Qualidade dos Dados
+            story.extend(self.create_data_quality_section(general_metrics))
+            
+            # 4. Análise por Período (Diário/Semanal/Mensal)
+            story.extend(self.create_period_analysis_section(period_analysis, analysis_type))
+            
+            # 5. Desempenho Operacional
+            story.extend(self.create_operational_analysis(general_metrics))
+            
+            # 6. Gráficos e Visualizações
+            if analysis_type == 'weekly' and 'performance_chart' in period_analysis:
+                story.extend(self.create_charts_section(period_analysis['performance_chart']))
+            
+            # 7. Recomendações
+            story.extend(self.create_recommendations_section(insights, general_metrics))
+            
+            # Gerar PDF
+            doc.build(story)
+            
+            # Calcular tamanho do arquivo
+            file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            
+            return {
+                'success': True,
+                'file_path': filepath,
+                'filename': filename,
+                'file_size_mb': round(file_size_mb, 2),
+                'analysis_type': analysis_type,
+                'period_days': period_days,
+                'data_quality': general_metrics.get('observabilidade', {}).get('consistencia', {})
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Erro ao gerar relatório: {str(e)}",
+                'file_path': None
+            }
+    
+    def create_enhanced_cover_page(self, metrics: Dict, analysis_type: str, period_days: int) -> List:
+        """Cria capa melhorada com informações do tipo de análise"""
+        story = []
+        
+        # Título principal
+        title = f"Relatório de Telemetria Veicular - Análise {analysis_type.title()}"
+        story.append(Paragraph(escape(title), self.styles['TitleStyle']))
+        
+        # Informações do veículo
+        veiculo_info = metrics.get('veiculo', {})
+        cliente = escape(str(veiculo_info.get('cliente', 'N/A')))
+        placa = escape(str(veiculo_info.get('placa', 'N/A')))
+        
+        story.append(Spacer(1, 30))
+        
+        # Dados do cliente e veículo
+        info_text = f"""
+        <b>Cliente:</b> {cliente}<br/>
+        <b>Placa do Veículo:</b> {placa}<br/>
+        <b>Tipo de Análise:</b> {analysis_type.upper()}<br/>
+        <b>Período de Análise:</b> {period_days} dia(s)
+        """
+        story.append(Paragraph(info_text, self.styles['Normal']))
+        
+        story.append(Spacer(1, 30))
+        
+        # Indicadores de qualidade
+        observabilidade = metrics.get('observabilidade', {}).get('consistencia', {})
+        percentual_dados_validos = observabilidade.get('percentual_dados_validos', 0)
+        
+        quality_text = f"""
+        <b>Qualidade dos Dados:</b><br/>
+        Dados válidos: {percentual_dados_validos}%<br/>
+        Registros processados: {observabilidade.get('registros_validos', 0)} de {observabilidade.get('total_registros', 0)}
+        """
+        story.append(Paragraph(quality_text, self.styles['Normal']))
+        
+        story.append(Spacer(1, 50))
+        
+        # Data de geração
+        data_geracao = datetime.now().strftime('%d/%m/%Y às %H:%M')
+        story.append(Paragraph(f"Relatório gerado em: {escape(data_geracao)}", 
+                              self.styles['Normal']))
+        
+        story.append(PageBreak())
+        return story
+    
+    def create_data_quality_section(self, metrics: Dict) -> List:
+        """Cria seção de análise de qualidade dos dados"""
+        story = []
+        
+        story.append(Paragraph("2. Qualidade e Consistência dos Dados", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+        
+        observabilidade = metrics.get('observabilidade', {}).get('consistencia', {})
+        
+        # Tabela de qualidade dos dados
+        quality_data = [
+            ['Métrica', 'Valor', 'Descrição'],
+            ['Total de Registros', f"{observabilidade.get('total_registros', 0):,}", 'Registros brutos importados'],
+            ['Registros Válidos', f"{observabilidade.get('registros_validos', 0):,}", 'Dados consistentes processados'],
+            ['Dados Filtrados', f"{observabilidade.get('dados_filtrados', 0):,}", 'Registros inconsistentes removidos'],
+            ['Percentual Válido', f"{observabilidade.get('percentual_dados_validos', 0)}%", 'Qualidade geral dos dados'],
+            ['KM Inconsistentes', f"{observabilidade.get('inconsistentes_km', 0):,}", 'Registros com KM mas sem velocidade'],
+            ['Velocidade sem KM', f"{observabilidade.get('velocidades_sem_km', 0):,}", 'Velocidade registrada sem deslocamento']
+        ]
+        
+        quality_table = Table(quality_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
+        quality_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E74C3C')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8F9FA')),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        
+        story.append(quality_table)
+        story.append(Spacer(1, 20))
+        
+        # Explicação dos filtros aplicados
+        story.append(Paragraph("Filtros de Consistência Aplicados:", self.styles['SubtitleStyle']))
+        
+        filters_text = """
+        • <b>Dados Irrelevantes Removidos:</b> Registros com quilometragem mas sem velocidade correspondente<br/>
+        • <b>Sensores com Falha:</b> Velocidades registradas sem deslocamento real do veículo<br/>
+        • <b>Consumo Inválido:</b> Estimativas de combustível apenas com movimento comprovado<br/>
+        • <b>Validação Temporal:</b> Apenas registros com timestamps válidos e sequenciais
+        """
+        story.append(Paragraph(filters_text, self.styles['Normal']))
+        
+        story.append(PageBreak())
+        return story
+    
+    def create_period_analysis_section(self, period_analysis: Dict, analysis_type: str) -> List:
+        """Cria seção de análise por período"""
+        story = []
+        
+        if analysis_type == 'daily':
+            story.append(Paragraph("3. Análise Diária Detalhada", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+            story.extend(self._create_daily_analysis(period_analysis))
+        elif analysis_type == 'weekly':
+            story.append(Paragraph("3. Análise Semanal Abrangente", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+            story.extend(self._create_weekly_analysis(period_analysis))
+        else:  # monthly
+            story.append(Paragraph("3. Análise Mensal Geral", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+            story.extend(self._create_monthly_analysis(period_analysis))
+        
+        return story
+    
+    def create_charts_section(self, chart_html: str) -> List:
+        """Cria seção de gráficos"""
+        story = []
+        
+        story.append(Paragraph("4. Gráficos de Desempenho Semanal", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+        
+        # Nota: Em uma implementação real, você converteria o HTML do Plotly para imagem
+        # Por agora, vamos adicionar uma descrição
+        story.append(Paragraph(
+            "Gráficos de desempenho semanal disponíveis na versão web do relatório.",
+            self.styles['Normal']
+        ))
+        
+        story.append(PageBreak())
+        return story
+    
+    def create_recommendations_section(self, insights: List[str], metrics: Dict) -> List:
+        """Cria seção de recomendações"""
+        story = []
+        
+        story.append(Paragraph("5. Recomendações e Insights", self.styles.get('SectionTitle', self.styles['SubtitleStyle'])))
+        
+        for insight in insights:
+            story.append(Paragraph(f"• {escape(str(insight))}", self.styles['Normal']))
+            story.append(Spacer(1, 5))
+        
+        return story
+    
+    def _generate_enhanced_insights(self, metrics: Dict, period_analysis: Dict, analysis_type: str) -> List[str]:
+        """Gera insights melhorados baseados na qualidade dos dados e tipo de análise"""
+        insights = []
+        
+        # Insights sobre qualidade dos dados
+        observabilidade = metrics.get('observabilidade', {}).get('consistencia', {})
+        percentual_valido = observabilidade.get('percentual_dados_validos', 0)
+        
+        if percentual_valido >= 95:
+            insights.append("Excelente qualidade dos dados: +95% dos registros são válidos e consistentes")
+        elif percentual_valido >= 85:
+            insights.append("Boa qualidade dos dados, com alguns registros inconsistentes filtrados")
+        else:
+            insights.append("Qualidade dos dados pode ser melhorada - verificar sensores do veículo")
+        
+        # Insights específicos por tipo de análise
+        if analysis_type == 'daily':
+            insights.append("Análise diária permite identificar padrões de uso detalhados")
+        elif analysis_type == 'weekly':
+            insights.append("Análise semanal revela tendências de desempenho e eficiência")
+        else:
+            insights.append("Análise mensal fornece visão geral do comportamento operacional")
+        
+        # Insights sobre operação
+        operacao = metrics.get('operacao', {})
+        km_total = operacao.get('km_total', 0)
+        if km_total > 1000:
+            insights.append("Alto índice de utilização do veículo - ótimo aproveitamento")
+        elif km_total > 500:
+            insights.append("Utilização moderada do veículo - dentro do esperado")
+        else:
+            insights.append("Baixa utilização do veículo - verificar necessidade operacional")
+        
+        return insights
+    
+    def _create_daily_analysis(self, period_analysis: Dict) -> List:
+        """Cria análise diária detalhada"""
+        story = []
+        
+        daily_metrics = period_analysis.get('daily_metrics', [])
+        
+        if not daily_metrics:
+            story.append(Paragraph("Nenhum dado diário disponível.", self.styles['Normal']))
+            return story
+        
+        # Tabela de dados diários
+        daily_data = [['Data', 'KM Total', 'Vel. Máxima', 'Combustível', 'Tempo Movimento']]
+        
+        for day_data in daily_metrics:
+            operacao = day_data.get('operacao', {})
+            combustivel = day_data.get('combustivel', {})
+            data_str = day_data.get('data', '').strftime('%d/%m/%Y') if hasattr(day_data.get('data', ''), 'strftime') else str(day_data.get('data', ''))
+            
+            daily_data.append([
+                data_str,
+                self._format_distance(operacao.get('km_total', 0), decimals=1),
+                format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0), include_unit=False),
+                f"{combustivel.get('fuel_consumed_liters', 0):.1f}L",
+                f"{operacao.get('tempo_em_movimento', 0)} reg."
+            ])
+        
+        daily_table = Table(daily_data, colWidths=[1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch])
+        daily_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27AE60')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#E8F8F5')),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        
+        story.append(daily_table)
+        story.append(PageBreak())
+        return story
+    
+    def _create_weekly_analysis(self, period_analysis: Dict) -> List:
+        """Cria análise semanal com gráficos"""
+        story = []
+        
+        weekly_metrics = period_analysis.get('weekly_metrics', [])
+        
+        if not weekly_metrics:
+            story.append(Paragraph("Nenhum dado semanal disponível.", self.styles['Normal']))
+            return story
+        
+        # Tabela de dados semanais
+        weekly_data = [['Semana', 'KM Total', 'Vel. Máxima', 'Combustível', 'Eficiência']]
+        
+        for week_data in weekly_metrics:
+            operacao = week_data.get('operacao', {})
+            combustivel = week_data.get('combustivel', {})
+            
+            weekly_data.append([
+                week_data.get('semana', ''),
+                self._format_distance(operacao.get('km_total', 0), decimals=1),
+                format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0), include_unit=False),
+                f"{combustivel.get('fuel_consumed_liters', 0):.1f}L",
+                f"{combustivel.get('efficiency_kmL', 0):.1f} km/L"
+            ])
+        
+        weekly_table = Table(weekly_data, colWidths=[1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch])
+        weekly_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498DB')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#EBF3FD')),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        
+        story.append(weekly_table)
+        story.append(Spacer(1, 20))
+        
+        # Adicionar referência aos gráficos
+        story.append(Paragraph(
+            "Gráficos de desempenho semanal detalhados estão disponíveis na próxima seção.",
+            self.styles['Normal']
+        ))
+        
+        story.append(PageBreak())
+        return story
+    
+    def _create_monthly_analysis(self, period_analysis: Dict) -> List:
+        """Cria análise mensal geral"""
+        story = []
+        
+        general_metrics = period_analysis.get('general_metrics', {})
+        monthly_summary = period_analysis.get('monthly_summary', [])
+        
+        # Métricas gerais do período
+        operacao = general_metrics.get('operacao', {})
+        combustivel = general_metrics.get('combustivel', {})
+        
+        summary_data = [
+            ['Métrica Geral', 'Valor'],
+            ['Quilometragem Total', self._format_distance(operacao.get('km_total', 0), decimals=2)],
+            ['Velocidade Máxima', format_speed(operacao.get('velocidade_maxima', 0), operacao.get('km_total', 0))],
+            ['Combustível Total', f"{combustivel.get('fuel_consumed_liters', 0):.2f} L"],
+            ['Eficiência Média', f"{combustivel.get('efficiency_kmL', 0):.2f} km/L"],
+            ['Tempo em Movimento', f"{operacao.get('tempo_em_movimento', 0)} registros"]
+        ]
+        
+        summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8E44AD')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F4F6F7')),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#BDC3C7')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        
+        story.append(summary_table)
+        story.append(PageBreak())
+        return story
 
 if __name__ == "__main__":
     # Teste do gerador

@@ -159,27 +159,40 @@ class TelemetryAnalyzer:
         # Cálculo robusto de quilometragem: soma dos incrementos positivos do odômetro
         odom_diff = df['odometro_periodo_km'].diff().fillna(0).clip(lower=0)
         
-        # Consistência: considerar deslocamento apenas quando há incremento de odômetro E velocidade > 0
+        # Validação aprimorada de dados relevantes
+        # 1. Consistência: considerar deslocamento apenas quando há incremento de odômetro E velocidade > 0
         valid_displacement_mask = (odom_diff > 0) & (df['velocidade_kmh'] > 0)
         
-        # Seleciona estratégia pelo feature flag
+        # 2. Filtrar dados irrelevantes: remover registros com KM mas sem velocidade
+        inconsistent_km_mask = (odom_diff > 0) & (df['velocidade_kmh'] <= 0)
+        
+        # 3. Filtrar velocidades sem deslocamento real (possíveis erros de sensor)
+        speed_without_movement_mask = (df['velocidade_kmh'] > 5) & (odom_diff <= 0)
+        
+        # Seleciona estratégia pelo feature flag (sempre usar modo consistente)
         if CONSISTENT_SPEED_KM_ONLY:
             km_total_calc = float(odom_diff[valid_displacement_mask].sum())
             vel_validas = df.loc[valid_displacement_mask, 'velocidade_kmh']
+            
+            # Filtrar dados para análise temporal (apenas registros válidos)
+            df_clean = df[valid_displacement_mask | ((df['velocidade_kmh'] == 0) & (odom_diff == 0))]
         else:
             # Modo legado: considera todos os incrementos de odômetro
             km_total_calc = float(odom_diff.sum())
             vel_validas = df['velocidade_kmh']
+            df_clean = df
         
         velocidade_maxima_calc = float(vel_validas.max()) if not vel_validas.empty else 0.0
         velocidade_media_calc = float(vel_validas.mean()) if not vel_validas.empty else 0.0
         
-        # Métricas de consistência para auditoria/observabilidade
-        inconsistentes_km = int(((odom_diff > 0) & (df['velocidade_kmh'] <= 0)).sum())
-        velocidades_sem_km = int(((df['velocidade_kmh'] > 0) & ~(odom_diff > 0)).sum())
+        # Métricas de consistência para auditoria/observabilidade (aprimoradas)
+        inconsistentes_km = int(inconsistent_km_mask.sum())
+        velocidades_sem_km = int(speed_without_movement_mask.sum())
         total_registros = int(len(df))
+        registros_validos = int(len(df_clean))
         deslocamentos_consistentes = int(valid_displacement_mask.sum())
         deslocamentos_totais = int((odom_diff > 0).sum())
+        dados_filtrados = total_registros - registros_validos
         
         # Log estruturado
         try:
@@ -195,6 +208,8 @@ class TelemetryAnalyzer:
                 },
                 'counters': {
                     'total_registros': total_registros,
+                    'registros_validos': registros_validos,
+                    'dados_filtrados': dados_filtrados,
                     'deslocamentos_totais': deslocamentos_totais,
                     'deslocamentos_consistentes': deslocamentos_consistentes,
                     'inconsistentes_km': inconsistentes_km,
@@ -258,10 +273,13 @@ class TelemetryAnalyzer:
                 'consistencia': {
                     'CONSISTENT_SPEED_KM_ONLY': CONSISTENT_SPEED_KM_ONLY,
                     'total_registros': total_registros,
+                    'registros_validos': registros_validos,
+                    'dados_filtrados': dados_filtrados,
                     'deslocamentos_totais': deslocamentos_totais,
                     'deslocamentos_consistentes': deslocamentos_consistentes,
                     'inconsistentes_km': inconsistentes_km,
-                    'velocidades_sem_km': velocidades_sem_km
+                    'velocidades_sem_km': velocidades_sem_km,
+                    'percentual_dados_validos': round((registros_validos / total_registros * 100), 2) if total_registros > 0 else 0
                 }
             }
         }
@@ -288,6 +306,157 @@ class TelemetryAnalyzer:
         }
         
         return metrics
+
+    def generate_daily_analysis(self, df: pd.DataFrame, placa: str) -> Dict:
+        """
+        Gera análise detalhada por dia para dados diários/semanais abrangentes
+        """
+        if df.empty:
+            return {}
+        
+        # Agrupar dados por dia
+        df_copy = df.copy()
+        df_copy['data'] = pd.to_datetime(df_copy['data_evento']).dt.date
+        
+        daily_data = []
+        for data, group in df_copy.groupby('data'):
+            day_metrics = self.generate_summary_metrics(group, placa)
+            day_metrics['data'] = data
+            daily_data.append(day_metrics)
+        
+        return {
+            'period_type': 'daily',
+            'total_days': len(daily_data),
+            'daily_metrics': daily_data
+        }
+    
+    def generate_weekly_analysis(self, df: pd.DataFrame, placa: str) -> Dict:
+        """
+        Gera análise semanal com gráficos de desempenho
+        """
+        if df.empty:
+            return {}
+        
+        # Agrupar dados por semana
+        df_copy = df.copy()
+        df_copy['week'] = pd.to_datetime(df_copy['data_evento']).dt.isocalendar().week
+        df_copy['year'] = pd.to_datetime(df_copy['data_evento']).dt.year
+        df_copy['year_week'] = df_copy['year'].astype(str) + '-W' + df_copy['week'].astype(str).str.zfill(2)
+        
+        weekly_data = []
+        for week, group in df_copy.groupby('year_week'):
+            week_metrics = self.generate_summary_metrics(group, placa)
+            week_metrics['semana'] = week
+            week_metrics['periodo_inicio'] = group['data_evento'].min()
+            week_metrics['periodo_fim'] = group['data_evento'].max()
+            weekly_data.append(week_metrics)
+        
+        # Criar gráfico de desempenho semanal
+        weekly_chart = self.create_weekly_performance_chart(weekly_data)
+        
+        return {
+            'period_type': 'weekly',
+            'total_weeks': len(weekly_data),
+            'weekly_metrics': weekly_data,
+            'performance_chart': weekly_chart
+        }
+    
+    def generate_monthly_analysis(self, df: pd.DataFrame, placa: str) -> Dict:
+        """
+        Gera análise mensal com dados gerais
+        """
+        if df.empty:
+            return {}
+        
+        # Análise geral do período completo
+        general_metrics = self.generate_summary_metrics(df, placa)
+        
+        # Agrupar dados por mês para resumo
+        df_copy = df.copy()
+        df_copy['month'] = pd.to_datetime(df_copy['data_evento']).dt.to_period('M')
+        
+        monthly_summary = []
+        for month, group in df_copy.groupby('month'):
+            month_metrics = self.generate_summary_metrics(group, placa)
+            month_metrics['mes'] = str(month)
+            monthly_summary.append(month_metrics)
+        
+        return {
+            'period_type': 'monthly',
+            'general_metrics': general_metrics,
+            'monthly_summary': monthly_summary
+        }
+    
+    def create_weekly_performance_chart(self, weekly_data: List[Dict]) -> str:
+        """
+        Cria gráfico de desempenho semanal com Plotly
+        """
+        if not weekly_data:
+            return ""
+        
+        # Extrair dados para gráfico
+        weeks = [w.get('semana', '') for w in weekly_data]
+        km_totals = [w.get('operacao', {}).get('km_total', 0) for w in weekly_data]
+        max_speeds = [w.get('operacao', {}).get('velocidade_maxima', 0) for w in weekly_data]
+        fuel_consumption = [w.get('combustivel', {}).get('fuel_consumed_liters', 0) for w in weekly_data]
+        
+        # Criar subplots
+        fig = make_subplots(
+            rows=3, cols=1,
+            subplot_titles=('Quilometragem Semanal', 'Velocidade Máxima Semanal', 'Consumo de Combustível Semanal'),
+            vertical_spacing=0.08
+        )
+        
+        # Gráfico de quilometragem
+        fig.add_trace(
+            go.Scatter(
+                x=weeks, y=km_totals,
+                mode='lines+markers',
+                name='KM Total',
+                line=dict(color='blue', width=3),
+                marker=dict(size=8)
+            ),
+            row=1, col=1
+        )
+        
+        # Gráfico de velocidade máxima
+        fig.add_trace(
+            go.Scatter(
+                x=weeks, y=max_speeds,
+                mode='lines+markers',
+                name='Velocidade Máxima',
+                line=dict(color='red', width=3),
+                marker=dict(size=8)
+            ),
+            row=2, col=1
+        )
+        
+        # Gráfico de consumo de combustível
+        fig.add_trace(
+            go.Scatter(
+                x=weeks, y=fuel_consumption,
+                mode='lines+markers',
+                name='Consumo (L)',
+                line=dict(color='green', width=3),
+                marker=dict(size=8)
+            ),
+            row=3, col=1
+        )
+        
+        # Configurar layout
+        fig.update_layout(
+            title='Desempenho Semanal do Veículo',
+            height=800,
+            showlegend=False
+        )
+        
+        # Atualizar eixos
+        fig.update_xaxes(title_text="Semana", row=3, col=1)
+        fig.update_yaxes(title_text="KM", row=1, col=1)
+        fig.update_yaxes(title_text="km/h", row=2, col=1)
+        fig.update_yaxes(title_text="Litros", row=3, col=1)
+        
+        return fig.to_html(include_plotlyjs='inline', div_id="weekly_performance_chart")
 
     def create_speed_chart(self, df: pd.DataFrame) -> str:
         """

@@ -584,6 +584,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Novo endpoint para relatório aprimorado
+@app.post("/api/generate-enhanced-report")
+async def generate_enhanced_report(
+    placa: str = Form(...),
+    data_inicio: str = Form(...),
+    data_fim: str = Form(...)
+):
+    """Gera relatório PDF aprimorado com estrutura melhorada (diário/semanal/mensal)"""
+    try:
+        # Validar e parsear datas
+        try:
+            data_inicio_dt = datetime.strptime(data_inicio, "%Y-%m-%d")
+            data_fim_dt = datetime.strptime(data_fim, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de data inválido. Use YYYY-MM-DD")
+        
+        # Validar período
+        if data_inicio_dt > data_fim_dt:
+            raise HTTPException(status_code=400, detail="Data de início deve ser anterior à data de fim")
+        
+        if (data_fim_dt - data_inicio_dt).days > 365:
+            raise HTTPException(status_code=400, detail="Período máximo permitido é de 365 dias")
+        
+        # Garantir que o diretório existe
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        
+        # Gerar relatório aprimorado
+        from .reports import PDFReportGenerator
+        generator = PDFReportGenerator()
+        result = generator.generate_enhanced_pdf_report(
+            placa=placa,
+            data_inicio=data_inicio_dt,
+            data_fim=data_fim_dt,
+            output_path=str(REPORTS_DIR)
+        )
+        
+        if result['success']:
+            return {
+                "success": True,
+                "message": f"Relatório aprimorado gerado com sucesso - Análise {result['analysis_type']}",
+                "file_path": result['file_path'],
+                "filename": result['filename'],
+                "file_size_mb": result['file_size_mb'],
+                "analysis_type": result['analysis_type'],
+                "period_days": result['period_days'],
+                "data_quality": result['data_quality'],
+                "download_url": f"/api/download/{result['filename']}"
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get('error', 'Erro desconhecido'))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
 # Função utilitária (não endpoint) para geração de relatório consolidado
 # Permite uso programático sem subir o servidor FastAPI
 async def gerar_relatorio_consolidado(
@@ -623,161 +679,3 @@ async def gerar_relatorio_consolidado(
     except Exception as e:
         return {"success": False, "error": f"Erro ao gerar relatório consolidado: {e}"}
 
-@app.get("/api/download/{filename}")
-async def download_relatorio(filename: str):
-    """Download de relatório PDF"""
-    file_path = REPORTS_DIR / filename
-    
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
-    
-    return FileResponse(
-        path=str(file_path),
-        filename=filename,
-        media_type='application/pdf'
-    )
-
-@app.delete("/api/relatorios/clear")
-async def clear_reports_history():
-    """Limpa o histórico de relatórios gerados"""
-    try:
-        deleted_count = 0
-        for file_path in REPORTS_DIR.glob("*.pdf"):
-            try:
-                file_path.unlink()
-                deleted_count += 1
-            except Exception as e:
-                print(f"Erro ao deletar {file_path}: {e}")
-                
-        return {
-            "success": True,
-            "message": f"Histórico limpo com sucesso! {deleted_count} relatório(s) removido(s).",
-            "deleted_count": deleted_count
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao limpar histórico: {str(e)}")
-
-@app.get("/api/relatorios")
-async def listar_relatorios(veiculo: Optional[str] = None, data: Optional[str] = None):
-    """Lista todos os relatórios gerados com filtros opcionais"""
-    try:
-        reports = []
-        for file_path in REPORTS_DIR.glob("*.pdf"):
-            stat = file_path.stat()
-            filename = file_path.name
-            created_at = datetime.fromtimestamp(stat.st_ctime)
-            
-            # Extrair placa do nome do arquivo (formato: PLACA_YYYYMMDD_HHMMSS.pdf)
-            try:
-                placa_from_file = filename.split('_')[0] if '_' in filename else None
-            except:
-                placa_from_file = None
-                
-            # Aplicar filtros
-            include_file = True
-            
-            # Filtro por veículo
-            if veiculo and placa_from_file:
-                if placa_from_file.upper() != veiculo.upper():
-                    include_file = False
-                    
-            # Filtro por data
-            if data and include_file:
-                try:
-                    filter_date = datetime.strptime(data, "%Y-%m-%d").date()
-                    file_date = created_at.date()
-                    if file_date != filter_date:
-                        include_file = False
-                except ValueError:
-                    pass  # Ignora filtro de data se formato inválido
-                    
-            if include_file:
-                reports.append({
-                    "id": filename.replace('.pdf', ''),
-                    "filename": filename,
-                    "placa": placa_from_file,
-                    "size_mb": round(stat.st_size / (1024 * 1024), 2),
-                    "created_at": created_at.isoformat(),
-                    "download_url": f"/api/download/{filename}"
-                })
-        
-        # Ordena por data de criação (mais recente primeiro)
-        reports.sort(key=lambda x: x['created_at'], reverse=True)
-        
-        return reports
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Rotas para dashboard
-@app.get("/api/dashboard/resumo")
-async def dashboard_resumo():
-    """Retorna resumo para dashboard"""
-    session = get_session()
-    try:
-        # Estatísticas básicas
-        total_clientes = session.query(Cliente).count()
-        total_veiculos = session.query(Veiculo).count()
-        total_registros = session.query(PosicaoHistorica).count()
-        
-        # Últimos registros (últimos 7 dias)
-        data_limite = datetime.now() - timedelta(days=7)
-        registros_recentes = session.query(PosicaoHistorica).filter(
-            PosicaoHistorica.data_evento >= data_limite
-        ).count()
-        
-        # Relatórios gerados
-        total_relatorios = len(list(REPORTS_DIR.glob("*.pdf")))
-        
-        return {
-            "total_clientes": total_clientes,
-            "total_veiculos": total_veiculos,
-            "total_registros": total_registros,
-            "registros_ultimos_7_dias": registros_recentes,
-            "total_relatorios": total_relatorios,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    finally:
-        session.close()
-
-@app.get("/api/dashboard/atividade-recente")
-async def dashboard_atividade():
-    """Retorna atividade recente para dashboard"""
-    session = get_session()
-    try:
-        # Últimos 10 registros
-        registros = session.query(PosicaoHistorica).join(Veiculo).order_by(
-            PosicaoHistorica.data_evento.desc()
-        ).limit(10).all()
-        
-        atividades = []
-        for registro in registros:
-            atividades.append({
-                "placa": registro.veiculo.placa,
-                "data_evento": registro.data_evento.isoformat(),
-                "velocidade": registro.velocidade_kmh,
-                "endereco": registro.endereco[:50] + "..." if len(registro.endereco) > 50 else registro.endereco,
-                "tipo_evento": registro.tipo_evento
-            })
-        
-        return atividades
-        
-    finally:
-        session.close()
-
-# Middleware para CORS (se necessário)
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Em produção, especificar origins específicos
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
