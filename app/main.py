@@ -432,16 +432,34 @@ async def gerar_relatorio_pdf(
 @app.get("/api/download/{filename}")
 async def download_relatorio(filename: str):
     """Download de relatório PDF"""
-    file_path = REPORTS_DIR / filename
-    
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
-    
-    return FileResponse(
-        path=str(file_path),
-        filename=filename,
-        media_type='application/pdf'
-    )
+    # Segurança: Validar que o arquivo está dentro do diretório permitido
+    try:
+        # Resolve o caminho completo e verifica se está dentro de REPORTS_DIR
+        file_path = (REPORTS_DIR / filename).resolve()
+        reports_dir_resolved = REPORTS_DIR.resolve()
+        
+        # Verifica se o caminho resolvido está dentro do diretório de relatórios
+        if not str(file_path).startswith(str(reports_dir_resolved)):
+            raise HTTPException(status_code=403, detail="Acesso negado")
+        
+        # Verifica se o arquivo existe
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+        
+        # Valida extensão do arquivo por segurança adicional
+        if not filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Tipo de arquivo não permitido")
+            
+        return FileResponse(
+            path=str(file_path),
+            filename=filename,
+            media_type='application/pdf'
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.delete("/api/relatorios/clear")
 async def clear_reports_history():
