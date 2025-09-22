@@ -314,7 +314,8 @@ class CSVProcessor:
             'duplicates_removed': 0,
             'gps_jumps_marked': 0,
             'speed_outliers_marked': 0,
-            'anomalies_detected': []
+            'anomalies_detected': [],
+            'inconsistent_removed': 0
         }
         
         # Remover ou marcar como outlier pontos com:
@@ -360,7 +361,26 @@ class CSVProcessor:
             quality_report['speed_outliers_marked'] += speed_outliers.sum()
             df_clean['speed_outlier'] = speed_outliers
         
-        # 5. Se total_km > 0 e max_speed_raw == 0 → recalcule max_speed
+        # Adicionar cálculos de delta para validações
+        if 'odometer' in df_clean.columns:
+            df_clean['delta_km'] = df_clean['odometer'].diff().fillna(0)
+        if 'timestamp' in df_clean.columns:
+            df_clean['delta_t'] = df_clean['timestamp'].diff().dt.total_seconds().fillna(0) / 3600
+        
+        # 5. Detectar inconsistências lógicas
+        inconsistent = pd.Series(False, index=df_clean.index)
+        if 'delta_km' in df_clean.columns and 'speed' in df_clean.columns:
+            rule1 = (df_clean['delta_km'] > 0) & (df_clean['speed'] == 0)
+            inconsistent |= rule1
+            rule2 = (df_clean['delta_km'] == 0) & (df_clean['speed'] > 0)
+            inconsistent |= rule2
+        if 'combustivel_litros' in df_clean.columns and 'delta_km' in df_clean.columns and 'speed' in df_clean.columns:
+            rule3 = (df_clean['delta_km'] > 0) & (df_clean['speed'] > 0) & (df_clean['combustivel_litros'] == 0)
+            inconsistent |= rule3
+        quality_report['inconsistent_removed'] = inconsistent.sum()
+        df_clean = df_clean[~inconsistent]
+        
+        # 6. Se total_km > 0 e max_speed_raw == 0 → recalcule max_speed
         # Esta verificação será feita após o cálculo das métricas
         
         return df_clean, quality_report

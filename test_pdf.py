@@ -7,6 +7,22 @@ sys.path.append('.')
 from app.reports import PDFReportGenerator
 from app.models import get_session, Veiculo, Cliente
 from datetime import datetime, timedelta
+import requests
+
+# Test the PDF generation endpoint
+url = "http://localhost:5000/api/relatorio/TODOS"
+data = {
+    "data_inicio": "2023-01-01T00:00:00Z",
+    "data_fim": "2023-01-07T23:59:59Z"
+}
+
+try:
+    response = requests.post(url, data=data)
+    print(f"Status Code: {response.status_code}")
+    print(f"Response: {response.json()}")
+except Exception as e:
+    print(f"Error: {e}")
+
 
 def test_pdf_generation():
     """Test the PDF generation"""

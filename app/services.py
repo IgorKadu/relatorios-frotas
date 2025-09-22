@@ -86,15 +86,7 @@ class DataQualityRules:
             )
             df_clean = df_clean[~mask_invalid_speed_km]
         
-        # Regra 3: Valida dados de GPS/GPRS quando disponíveis
-        if 'latitude' in df_clean.columns and 'longitude' in df_clean.columns:
-            mask_invalid_coords = (
-                (df_clean['latitude'] == 0) & 
-                (df_clean['longitude'] == 0)
-            )
-            df_clean = df_clean[~mask_invalid_coords]
-        
-        removed_count = original_count - len(df_clean)
+        # Regra 3: Valida dados de GPS/GPRS quando disponíveis\n        if 'latitude' in df_clean.columns and 'longitude' in df_clean.columns:\n            mask_invalid_coords = (\n                (df_clean['latitude'] == 0) & \n                (df_clean['longitude'] == 0)\n            )\n            df_clean = df_clean[~mask_invalid_coords]\n        \n        # Regra 4: Remove KM >0, speed >0, fuel ==0 se coluna existir\n        if 'combustivel_litros' in df_clean.columns:\n            mask_invalid_fuel = (\n                (df_clean['odometro_periodo_km'] > 0) & \n                (df_clean['velocidade_kmh'] > 0) &\n                (df_clean['combustivel_litros'] == 0)\n            )\n            df_clean = df_clean[~mask_invalid_fuel]\n        \n        removed_count = original_count - len(df_clean)
         if removed_count > 0:
             logger.info(f"Removidos {removed_count} registros inconsistentes ({removed_count/original_count:.1%})")
         
@@ -139,7 +131,7 @@ class PeriodAggregator:
         for date, day_df in df_clean.groupby('date'):
             daily_data[date] = {
                 'total_registros': len(day_df),
-                'km_total': day_df['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else day_df['odometro_periodo_km'].sum(),
+                'km_total': day_df[day_df['velocidade_kmh'] > 0]['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else day_df['odometro_periodo_km'].sum(),
                 'velocidade_max': day_df['velocidade_kmh'].max(),
                 'velocidade_media': day_df[day_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(day_df[day_df['velocidade_kmh'] > 0]) > 0 else 0,
                 'tempo_ligado_horas': len(day_df[day_df['ligado'] == True]) * 5 / 60,  # 5min intervals
@@ -155,6 +147,18 @@ class PeriodAggregator:
             daily_data[date]['combustivel_estimado'] = DataQualityRules.calculate_fuel_consistency(
                 km, speed_avg, movement_hours
             )
+
+            # Adiciona breakdown horário para maior granularidade
+            hourly_breakdown = {}
+            day_df['hour'] = pd.to_datetime(day_df['data_evento']).dt.hour
+            for hour, hour_df in day_df.groupby('hour'):
+                hourly_breakdown[hour] = {
+                    'km': hour_df[hour_df['velocidade_kmh'] > 0]['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else hour_df['odometro_periodo_km'].sum(),
+                    'avg_speed': hour_df[hour_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(hour_df[hour_df['velocidade_kmh'] > 0]) > 0 else 0,
+                    'alerts': len(hour_df[hour_df['velocidade_kmh'] > 80]),
+                    'movement_hours': len(hour_df[hour_df['em_movimento'] == True]) * 5 / 60
+                }
+            daily_data[date]['hourly_breakdown'] = hourly_breakdown
         
         return daily_data
     
@@ -178,7 +182,7 @@ class PeriodAggregator:
             weekly_data[f"{week_start} a {week_end}"] = {
                 'periodo': f"Semana de {week_start.strftime('%d/%m')} a {week_end.strftime('%d/%m')}",
                 'total_registros': len(week_df),
-                'km_total': week_df['odometro_periodo_km'].sum(),
+                'km_total': week_df[week_df['velocidade_kmh'] > 0]['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else week_df['odometro_periodo_km'].sum(),
                 'velocidade_max': week_df['velocidade_kmh'].max(),
                 'velocidade_media': week_df[week_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(week_df[week_df['velocidade_kmh'] > 0]) > 0 else 0,
                 'tempo_ligado_horas': len(week_df[week_df['ligado'] == True]) * 5 / 60,
@@ -192,8 +196,111 @@ class PeriodAggregator:
             km = weekly_data[f"{week_start} a {week_end}"]['km_total']
             days = weekly_data[f"{week_start} a {week_end}"]['dias_operacao']
             weekly_data[f"{week_start} a {week_end}"]['produtividade_km_dia'] = km / days if days > 0 else 0
+
+            # Adiciona breakdown diário para maior granularidade
+            daily_breakdown = {}
+            week_df['date'] = pd.to_datetime(week_df['data_evento']).dt.date
+            for date, day_df in week_df.groupby('date'):
+                daily_breakdown[date] = {
+                    'km': day_df[day_df['velocidade_kmh'] > 0]['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else day_df['odometro_periodo_km'].sum(),
+                    'avg_speed': day_df[day_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(day_df[day_df['velocidade_kmh'] > 0]) > 0 else 0,
+                    'alerts': len(day_df[day_df['velocidade_kmh'] > 80]),
+                    'movement_hours': len(day_df[day_df['em_movimento'] == True]) * 5 / 60
+                }
+            weekly_data[f"{week_start} a {week_end}"]['daily_breakdown'] = daily_breakdown
         
         return weekly_data
+
+    @staticmethod
+    def aggregate_biweekly(df: pd.DataFrame) -> Dict:
+        """
+        Agrega dados por quinzena com análises gerais e padrões
+        """
+        if df.empty:
+            return {}
+        
+        df_clean = DataQualityRules.validate_telemetry_consistency(df)
+        df_clean['data_evento'] = pd.to_datetime(df_clean['data_evento'])
+        
+        biweekly_data = {}
+        for biweek, biweek_df in df_clean.groupby(pd.Grouper(key='data_evento', freq='2W')):
+            biweek_end = biweek.date()
+            biweek_start = biweek_end - timedelta(days=13)
+            key = f"{biweek_start} a {biweek_end}"
+            
+            biweekly_data[key] = {
+                'periodo': f"Quinzena de {biweek_start.strftime('%d/%m')} a {biweek_end.strftime('%d/%m')}",
+                'total_registros': len(biweek_df),
+                'km_total': biweek_df[biweek_df['velocidade_kmh'] > 0]['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else biweek_df['odometro_periodo_km'].sum(),
+                'velocidade_max': biweek_df['velocidade_kmh'].max(),
+                'velocidade_media': biweek_df[biweek_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(biweek_df[biweek_df['velocidade_kmh'] > 0]) > 0 else 0,
+                'tempo_ligado_horas': len(biweek_df[biweek_df['ligado'] == True]) * 5 / 60,
+                'tempo_movimento_horas': len(biweek_df[biweek_df['em_movimento'] == True]) * 5 / 60,
+                'alertas_velocidade': len(biweek_df[biweek_df['velocidade_kmh'] > 80]),
+                'dias_operacao': pd.to_datetime(biweek_df['data_evento']).dt.date.nunique(),
+                'periodos_operacionais': biweek_df['periodo_operacional'].value_counts().to_dict()
+            }
+            
+            # Análises gerais e padrões
+            km_total = biweekly_data[key]['km_total']
+            days = biweekly_data[key]['dias_operacao']
+            biweekly_data[key]['produtividade_km_dia'] = km_total / days if days > 0 else 0
+            biweekly_data[key]['taxa_utilizacao'] = days / 14 if days > 0 else 0
+            # Padrão simples: dia da semana com mais km
+            biweek_df['weekday'] = biweek_df['data_evento'].dt.weekday
+            weekday_km = biweek_df.groupby('weekday')['odometro_periodo_km'].sum()
+            biweekly_data[key]['peak_weekday'] = weekday_km.idxmax() if not weekday_km.empty else None
+        
+        return biweekly_data
+
+    @staticmethod
+    def aggregate_monthly(df: pd.DataFrame) -> Dict:
+        """
+        Agrega dados por mês com análises gerais, intervalos e dados para gráficos de desempenho
+        """
+        if df.empty:
+            return {}
+        
+        df_clean = DataQualityRules.validate_telemetry_consistency(df)
+        df_clean['data_evento'] = pd.to_datetime(df_clean['data_evento'])
+        
+        monthly_data = {}
+        for month, month_df in df_clean.groupby(pd.Grouper(key='data_evento', freq='M')):
+            month_start = month.replace(day=1).date()
+            month_end = month.date()
+            key = f"{month_start.strftime('%m/%Y')}"
+            
+            monthly_data[key] = {
+                'periodo': f"Mês de {month_start.strftime('%B %Y')}",
+                'total_registros': len(month_df),
+                'km_total': month_df[month_df['velocidade_kmh'] > 0]['odometro_periodo_km'].sum() if CONSISTENT_SPEED_KM_ONLY else month_df['odometro_periodo_km'].sum(),
+                'velocidade_max': month_df['velocidade_kmh'].max(),
+                'velocidade_media': month_df[month_df['velocidade_kmh'] > 0]['velocidade_kmh'].mean() if len(month_df[month_df['velocidade_kmh'] > 0]) > 0 else 0,
+                'tempo_ligado_horas': len(month_df[month_df['ligado'] == True]) * 5 / 60,
+                'tempo_movimento_horas': len(month_df[month_df['em_movimento'] == True]) * 5 / 60,
+                'alertas_velocidade': len(month_df[month_df['velocidade_kmh'] > 80]),
+                'dias_operacao': pd.to_datetime(month_df['data_evento']).dt.date.nunique(),
+                'periodos_operacionais': month_df['periodo_operacional'].value_counts().to_dict()
+            }
+            
+            # Análises gerais e intervalos
+            days = monthly_data[key]['dias_operacao']
+            monthly_data[key]['produtividade_km_dia'] = monthly_data[key]['km_total'] / days if days > 0 else 0
+            # Breakdown em intervalos semanais
+            monthly_data[key]['weekly_breakdown'] = PeriodAggregator.aggregate_weekly(month_df)
+            
+            # Dados para gráficos de desempenho (ex. km por semana)
+            graph_data = []
+            for week_key, week_data in monthly_data[key]['weekly_breakdown'].items():
+                graph_data.append({
+                    'week': week_key,
+                    'km': week_data['km_total'],
+                    'avg_speed': week_data['velocidade_media'],
+                    'alerts': week_data['alertas_velocidade']
+                })
+            monthly_data[key]['performance_graph_data'] = graph_data
+        
+        return monthly_data
     
     @staticmethod
     def compute_vehicle_rankings(vehicles_data: Dict) -> Dict:
@@ -766,13 +873,15 @@ class TelemetryAnalyzer:
         weeks = [w.get('semana', '') for w in weekly_data]
         km_totals = [w.get('operacao', {}).get('km_total', 0) for w in weekly_data]
         max_speeds = [w.get('operacao', {}).get('velocidade_maxima', 0) for w in weekly_data]
+        avg_speeds = [w.get('operacao', {}).get('velocidade_media', 0) for w in weekly_data]
         fuel_consumption = [w.get('combustivel', {}).get('fuel_consumed_liters', 0) for w in weekly_data]
+        alerts = [w.get('operacao', {}).get('alertas', 0) for w in weekly_data]
         
         # Criar subplots
         fig = make_subplots(
-            rows=3, cols=1,
-            subplot_titles=('Quilometragem Semanal', 'Velocidade Máxima Semanal', 'Consumo de Combustível Semanal'),
-            vertical_spacing=0.08
+            rows=4, cols=1,
+            subplot_titles=('Quilometragem Semanal', 'Velocidades Semanais', 'Consumo de Combustível Semanal', 'Alertas Semanais'),
+            vertical_spacing=0.06
         )
         
         # Gráfico de quilometragem
@@ -787,13 +896,23 @@ class TelemetryAnalyzer:
             row=1, col=1
         )
         
-        # Gráfico de velocidade máxima
+        # Gráfico de velocidades (máxima e média)
         fig.add_trace(
             go.Scatter(
                 x=weeks, y=max_speeds,
                 mode='lines+markers',
-                name='Velocidade Máxima',
+                name='Vel. Máxima',
                 line=dict(color='red', width=3),
+                marker=dict(size=8)
+            ),
+            row=2, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=weeks, y=avg_speeds,
+                mode='lines+markers',
+                name='Vel. Média',
+                line=dict(color='orange', width=3, dash='dash'),
                 marker=dict(size=8)
             ),
             row=2, col=1
@@ -811,18 +930,36 @@ class TelemetryAnalyzer:
             row=3, col=1
         )
         
+        # Gráfico de alertas
+        fig.add_trace(
+            go.Bar(
+                x=weeks, y=alerts,
+                name='Alertas',
+                marker_color='purple'
+            ),
+            row=4, col=1
+        )
+        
         # Configurar layout
         fig.update_layout(
             title='Desempenho Semanal do Veículo',
-            height=800,
-            showlegend=False
+            height=1000,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
         )
         
         # Atualizar eixos
-        fig.update_xaxes(title_text="Semana", row=3, col=1)
+        fig.update_xaxes(title_text="Semana", row=4, col=1)
         fig.update_yaxes(title_text="KM", row=1, col=1)
         fig.update_yaxes(title_text="km/h", row=2, col=1)
         fig.update_yaxes(title_text="Litros", row=3, col=1)
+        fig.update_yaxes(title_text="Quantidade", row=4, col=1)
         
         return fig.to_html(include_plotlyjs='inline', div_id="weekly_performance_chart")
 
@@ -835,25 +972,58 @@ class TelemetryAnalyzer:
         
         fig = go.Figure()
         
-        # Gráfico de velocidade
+        # Gráfico de velocidade com cores mais vibrantes e marcadores
         fig.add_trace(go.Scatter(
             x=df['data_evento'],
             y=df['velocidade_kmh'],
             mode='lines',
             name='Velocidade (km/h)',
-            line=dict(color='blue', width=1)
+            line=dict(color='#1E88E5', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(30, 136, 229, 0.1)'
         ))
         
         # Linha de velocidade máxima permitida (80 km/h)
         fig.add_hline(y=80, line_dash="dash", line_color="red", 
-                     annotation_text="Limite de Velocidade")
+                     annotation=dict(
+                         text="Limite de Velocidade",
+                         font=dict(color="red", size=14),
+                         xref="paper", x=0.02,
+                         yref="y", y=82
+                     ))
+        
+        # Linha de velocidade média
+        avg_speed = df['velocidade_kmh'].mean()
+        fig.add_hline(y=avg_speed, line_dash="dot", line_color="green", 
+                     annotation=dict(
+                         text=f"Velocidade Média: {avg_speed:.1f} km/h",
+                         font=dict(color="green", size=14),
+                         xref="paper", x=0.02,
+                         yref="y", y=avg_speed + 2
+                     ))
         
         fig.update_layout(
             title='Velocidade ao Longo do Tempo',
             xaxis_title='Data/Hora',
             yaxis_title='Velocidade (km/h)',
             hovermode='x unified',
-            height=400
+            height=500,
+            margin=dict(l=50, r=50, t=80, b=50),
+            plot_bgcolor='rgba(240, 240, 240, 0.8)'
+        )
+        
+        # Melhorar a formatação dos eixos
+        fig.update_xaxes(
+            showgrid=True, 
+            gridcolor='rgba(200, 200, 200, 0.2)',
+            tickformat='%d/%m %H:%M'
+        )
+        
+        fig.update_yaxes(
+            showgrid=True, 
+            gridcolor='rgba(200, 200, 200, 0.2)',
+            zeroline=True,
+            zerolinecolor='rgba(0, 0, 0, 0.2)'
         )
         
         # Converte para HTML
@@ -872,13 +1042,24 @@ class TelemetryAnalyzer:
             go.Pie(
                 labels=periodo_counts.index,
                 values=periodo_counts.values,
-                hole=0.3
+                hole=0.3,
+                marker_colors=px.colors.qualitative.Set3,
+                textinfo='label+percent',
+                insidetextorientation='radial',
+                hoverinfo='label+percent+value'
             )
         ])
         
         fig.update_layout(
             title='Distribuição por Períodos Operacionais',
-            height=400
+            height=500,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.2,
+                xanchor="center",
+                x=0.5
+            )
         )
         
         return fig.to_html(include_plotlyjs='inline', div_id="periods_chart")
@@ -902,13 +1083,52 @@ class TelemetryAnalyzer:
         df_status['status_ignicao'] = df_status['ignicao'].astype(str).replace(status_map)
         status_counts = df_status['status_ignicao'].value_counts()
         
+        # Cores personalizadas para cada status
+        colors = {
+            'Desligado': '#E53935',      # Vermelho
+            'Ligado': '#43A047',         # Verde
+            'Ligado Parado': '#FB8C00',  # Laranja
+            'Ligado Movimento': '#1E88E5' # Azul
+        }
+        
+        # Criar lista de cores na ordem dos status
+        bar_colors = [colors.get(status, '#9E9E9E') for status in status_counts.index]
+        
         fig = go.Figure(data=[
             go.Bar(
                 x=status_counts.index,
                 y=status_counts.values,
-                marker_color=['red', 'green', 'orange', 'blue']
+                marker_color=bar_colors,
+                text=status_counts.values,
+                textposition='auto',
+                hovertemplate='%{x}: %{y} registros<extra></extra>'
             )
         ])
+        
+        # Adicionar porcentagens no topo
+        total = status_counts.sum()
+        percentages = [(count / total) * 100 for count in status_counts.values]
+        
+        for i, (x, y, percentage) in enumerate(zip(status_counts.index, status_counts.values, percentages)):
+            fig.add_annotation(
+                x=x,
+                y=y,
+                text=f"{percentage:.1f}%",
+                showarrow=False,
+                yshift=10,
+                font=dict(size=12)
+            )
+        
+        fig.update_layout(
+            title='Distribuição de Status da Ignição',
+            xaxis_title='Status',
+            yaxis_title='Quantidade de Registros',
+            height=500,
+            bargap=0.3,
+            plot_bgcolor='rgba(240, 240, 240, 0.8)'
+        )
+        
+        return fig.to_html(include_plotlyjs='inline', div_id="ignition_chart")
         
         fig.update_layout(
             title='Distribuição do Status da Ignição',
