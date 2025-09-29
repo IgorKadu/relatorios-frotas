@@ -456,6 +456,69 @@ async def clear_reports_history():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao limpar histórico: {str(e)}")
 
+@app.delete("/api/database/clear")
+async def clear_database():
+    """Limpa completamente o banco de dados - remove todos os dados de clientes, veículos e posições"""
+    try:
+        session = get_session()
+        
+        # Contar registros antes da limpeza
+        clientes_count = session.query(Cliente).count()
+        veiculos_count = session.query(Veiculo).count()
+        posicoes_count = session.query(PosicaoHistorica).count()
+        perfis_count = session.query(PerfilHorario).count()
+        relatorios_count = session.query(RelatorioGerado).count()
+        
+        total_registros = clientes_count + veiculos_count + posicoes_count + perfis_count + relatorios_count
+        
+        # Limpar todas as tabelas (ordem importante devido às chaves estrangeiras)
+        session.query(PosicaoHistorica).delete()
+        session.query(RelatorioGerado).delete()
+        session.query(PerfilHorario).delete()
+        session.query(Veiculo).delete()
+        session.query(Cliente).delete()
+        
+        session.commit()
+        session.close()
+        
+        # Limpar arquivos de upload
+        upload_files_deleted = 0
+        if UPLOAD_DIR.exists():
+            for file_path in UPLOAD_DIR.glob("*"):
+                try:
+                    if file_path.is_file():
+                        file_path.unlink()
+                        upload_files_deleted += 1
+                except Exception as e:
+                    print(f"Erro ao deletar arquivo de upload {file_path}: {e}")
+        
+        # Limpar relatórios PDF
+        reports_deleted = 0
+        if REPORTS_DIR.exists():
+            for file_path in REPORTS_DIR.glob("*.pdf"):
+                try:
+                    file_path.unlink()
+                    reports_deleted += 1
+                except Exception as e:
+                    print(f"Erro ao deletar relatório {file_path}: {e}")
+        
+        return {
+            "success": True,
+            "message": f"Banco de dados limpo com sucesso! {total_registros} registro(s) removido(s), {upload_files_deleted} arquivo(s) de upload removido(s), {reports_deleted} relatório(s) removido(s).",
+            "details": {
+                "clientes_removidos": clientes_count,
+                "veiculos_removidos": veiculos_count,
+                "posicoes_removidas": posicoes_count,
+                "perfis_removidos": perfis_count,
+                "relatorios_removidos": relatorios_count,
+                "arquivos_upload_removidos": upload_files_deleted,
+                "arquivos_relatorio_removidos": reports_deleted
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao limpar banco de dados: {str(e)}")
+
 @app.get("/api/relatorios")
 async def listar_relatorios(veiculo: Optional[str] = None, data: Optional[str] = None):
     """Lista todos os relatórios gerados com filtros opcionais"""

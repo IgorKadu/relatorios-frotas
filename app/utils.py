@@ -599,9 +599,10 @@ class CSVProcessor:
     def read_csv_file(self, file_path: str) -> pd.DataFrame:
         """
         Lê arquivo CSV e retorna DataFrame limpo e padronizado
+        Lida com arquivos que têm múltiplas seções com estruturas diferentes
         """
         try:
-            # Tenta diferentes encodings
+            # Primeiro, tenta ler o arquivo normalmente
             encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
             df = None
             
@@ -609,8 +610,12 @@ class CSVProcessor:
                 try:
                     df = pd.read_csv(file_path, sep=';', encoding=encoding)
                     break
-                except UnicodeDecodeError:
+                except (UnicodeDecodeError, pd.errors.ParserError):
                     continue
+            
+            # Se falhou com erro de parser, tenta estratégia de múltiplas seções
+            if df is None:
+                df = self._read_multi_section_csv(file_path, encodings)
             
             if df is None:
                 raise ValueError(f"Não foi possível ler o arquivo {file_path} com nenhum encoding")
@@ -628,20 +633,75 @@ class CSVProcessor:
         except Exception as e:
             raise Exception(f"Erro ao ler arquivo CSV {file_path}: {str(e)}")
     
+    def _read_multi_section_csv(self, file_path: str, encodings: List[str]) -> pd.DataFrame:
+        """
+        Lê arquivos CSV com múltiplas seções (como relatórios de trajeto)
+        """
+        for encoding in encodings:
+            try:
+                # Lê o arquivo linha por linha para identificar seções
+                with open(file_path, 'r', encoding=encoding) as file:
+                    lines = file.readlines()
+                
+                # Identifica onde começam os dados detalhados
+                # Procura pela linha que tem mais campos (seção de dados)
+                max_fields = 0
+                data_start_line = 0
+                
+                for i, line in enumerate(lines):
+                    field_count = len(line.split(';'))
+                    if field_count > max_fields:
+                        max_fields = field_count
+                        data_start_line = i
+                
+                # Se encontrou uma seção com mais campos, usa apenas essa seção
+                if data_start_line > 0 and max_fields > 11:
+                    # Cria um arquivo temporário apenas com a seção de dados
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding=encoding) as temp_file:
+                        # Escreve o cabeçalho da seção de dados
+                        temp_file.write(lines[data_start_line])
+                        # Escreve os dados
+                        for line in lines[data_start_line + 1:]:
+                            if line.strip() and len(line.split(';')) == max_fields:
+                                temp_file.write(line)
+                        
+                        temp_path = temp_file.name
+                    
+                    try:
+                        # Lê o arquivo temporário
+                        df = pd.read_csv(temp_path, sep=';', encoding=encoding)
+                        os.unlink(temp_path)  # Remove arquivo temporário
+                        return df
+                    except Exception:
+                        os.unlink(temp_path)  # Remove arquivo temporário em caso de erro
+                        continue
+                
+            except Exception:
+                continue
+        
+        return None
+    
     def clean_and_parse_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Limpa e padroniza os dados do DataFrame
         """
         df_clean = df.copy()
         
+        # Verifica se é um relatório de trajeto percorrido (formato específico)
+        if 'Período' in df_clean.columns and 'Tempo total ligado' in df_clean.columns:
+            return self._clean_trajeto_percorrido_data(df_clean)
+        
         # Limpa e converte datas
-        df_clean['Data'] = pd.to_datetime(df_clean['Data'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+        if 'Data' in df_clean.columns:
+            df_clean['Data'] = pd.to_datetime(df_clean['Data'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
         
         if 'Data (GPRS)' in df_clean.columns:
             df_clean['Data (GPRS)'] = pd.to_datetime(df_clean['Data (GPRS)'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
         
         # Limpa velocidade
-        df_clean['Velocidade (Km)'] = pd.to_numeric(df_clean['Velocidade (Km)'], errors='coerce').fillna(0)
+        if 'Velocidade (Km)' in df_clean.columns:
+            df_clean['Velocidade (Km)'] = pd.to_numeric(df_clean['Velocidade (Km)'], errors='coerce').fillna(0)
         
         # Processa coordenadas
         if 'Localização' in df_clean.columns:
@@ -661,8 +721,136 @@ class CSVProcessor:
             df_clean['Odometro_Embarcado_Km'] = pd.to_numeric(df_clean['Odômetro embarcado (Km)'], errors='coerce').fillna(0)
         
         # Converte GPS e GPRS para booleano
-        df_clean['GPS'] = df_clean['GPS'].astype(str).map({'1': True, '0': False}).fillna(True)
-        df_clean['Gprs'] = df_clean['Gprs'].astype(str).map({'1': True, '0': False}).fillna(True)
+        if 'GPS' in df_clean.columns:
+            df_clean['GPS'] = df_clean['GPS'].astype(str).map({'1': True, '0': False}).fillna(True)
+        if 'Gprs' in df_clean.columns:
+            df_clean['Gprs'] = df_clean['Gprs'].astype(str).map({'1': True, '0': False}).fillna(True)
+    
+    def _clean_trajeto_percorrido_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Limpa e padroniza dados específicos do relatório de trajeto percorrido
+        """
+        df_clean = df.copy()
+        
+        # Processa período (extrai datas de início e fim)
+        if 'Período' in df_clean.columns:
+            periodo_parts = df_clean['Período'].str.split(' - ', expand=True)
+            if periodo_parts.shape[1] >= 2:
+                df_clean['Data_Inicio'] = pd.to_datetime(periodo_parts[0], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+                df_clean['Data_Fim'] = pd.to_datetime(periodo_parts[1], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+                # Usa a data de início como data principal
+                df_clean['Data'] = df_clean['Data_Inicio']
+        
+        # Processa odômetro
+        if 'Odômetro (Km)' in df_clean.columns:
+            df_clean['Odometro_Km'] = pd.to_numeric(df_clean['Odômetro (Km)'].str.replace(' - ', '0'), errors='coerce').fillna(0)
+        
+        # Processa tempos (converte para minutos)
+        time_columns = ['Tempo total ligado', 'Tempo em movimento', 'Tempo ocioso', 'Tempo desligado']
+        for col in time_columns:
+            if col in df_clean.columns:
+                df_clean[f'{col}_Minutos'] = df_clean[col].apply(self._convert_time_to_minutes)
+        
+        # Limpa dados de localização
+        if 'Origem' in df_clean.columns:
+            df_clean['Origem_Limpa'] = df_clean['Origem'].str.replace(' - ', '', regex=False).fillna('')
+        
+        if 'Destino' in df_clean.columns:
+            df_clean['Destino_Limpa'] = df_clean['Destino'].str.replace(' - ', '', regex=False).fillna('')
+        
+        # Processa custos
+        cost_columns = ['Custo (Km/L)', 'Custo (L/H)']
+        for col in cost_columns:
+            if col in df_clean.columns:
+                df_clean[f'{col}_Valor'] = pd.to_numeric(
+                    df_clean[col].str.replace('$ ', '').str.replace(',', '.').str.replace(' - ', '0'), 
+                    errors='coerce'
+                ).fillna(0)
+        
+        # Adiciona colunas padrão se não existirem
+        if 'Latitude' not in df_clean.columns:
+            df_clean['Latitude'] = np.nan
+        if 'Longitude' not in df_clean.columns:
+            df_clean['Longitude'] = np.nan
+        if 'Velocidade (Km)' not in df_clean.columns:
+            df_clean['Velocidade (Km)'] = 0
+        
+        # Adiciona colunas obrigatórias que o sistema espera
+        required_missing_columns = [
+            'Data (GPRS)', 'Ignição', 'Motorista', 'GPS', 'Gprs',
+            'Localização', 'Endereço', 'Tipo do Evento', 'Saida', 'Entrada',
+            'Pacote', 'Odômetro do período  (Km)', 'Horímetro do período',
+            'Horímetro embarcado', 'Odômetro embarcado (Km)', 'Bateria',
+            'Imagem', 'Tensão', 'Bloqueado'
+        ]
+        
+        for col in required_missing_columns:
+            if col not in df_clean.columns:
+                if col == 'Ignição':
+                    # Mapeia o status para ignição (Ligado = True, Desligado = False)
+                    if 'Status' in df_clean.columns:
+                        df_clean['Ignição'] = df_clean['Status'].map({
+                            'Ligado': 'Ligado',
+                            'Desligado': 'Desligado'
+                        }).fillna('Desligado')
+                    else:
+                        df_clean['Ignição'] = 'Desligado'
+                elif col == 'Data (GPRS)':
+                    # Usa a mesma data principal
+                    df_clean['Data (GPRS)'] = df_clean.get('Data', pd.NaT)
+                elif col == 'GPS':
+                    df_clean['GPS'] = True  # Assume GPS ativo para relatórios de trajeto
+                elif col == 'Gprs':
+                    df_clean['Gprs'] = True  # Assume GPRS ativo para relatórios de trajeto
+                elif col == 'Localização':
+                    # Combina origem e destino se disponível
+                    if 'Origem' in df_clean.columns and 'Destino' in df_clean.columns:
+                        df_clean['Localização'] = df_clean['Origem'].fillna('') + ' -> ' + df_clean['Destino'].fillna('')
+                    else:
+                        df_clean['Localização'] = ''
+                elif col == 'Endereço':
+                    # Usa origem como endereço principal
+                    df_clean['Endereço'] = df_clean.get('Origem', '')
+                elif col == 'Odômetro do período  (Km)':
+                    # Usa o odômetro já processado
+                    df_clean['Odômetro do período  (Km)'] = df_clean.get('Odometro_Km', 0)
+                elif col == 'Odômetro embarcado (Km)':
+                    # Usa o odômetro já processado
+                    df_clean['Odômetro embarcado (Km)'] = df_clean.get('Odometro_Km', 0)
+                elif col in ['Motorista', 'Tipo do Evento', 'Saida', 'Entrada', 'Pacote', 
+                           'Horímetro do período', 'Horímetro embarcado', 'Bateria', 
+                           'Imagem', 'Tensão', 'Bloqueado']:
+                    # Colunas de texto/numéricas padrão
+                    if col in ['Bateria', 'Tensão']:
+                        df_clean[col] = 0.0
+                    elif col in ['Saida', 'Entrada', 'Bloqueado']:
+                        df_clean[col] = False
+                    else:
+                        df_clean[col] = ''
+        
+        return df_clean
+    
+    def _convert_time_to_minutes(self, time_str: str) -> float:
+        """
+        Converte string de tempo (HH:MM:SS) para minutos
+        """
+        if pd.isna(time_str) or time_str.strip() in ['', ' - ']:
+            return 0.0
+        
+        try:
+            # Remove espaços e traços
+            time_str = str(time_str).strip().replace(' - ', '00:00:00')
+            
+            # Divide por :
+            parts = time_str.split(':')
+            if len(parts) == 3:
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = int(parts[2])
+                return hours * 60 + minutes + seconds / 60
+            return 0.0
+        except (ValueError, AttributeError):
+            return 0.0
         
         # Limpa dados de bateria
         if 'Bateria' in df_clean.columns:

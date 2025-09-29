@@ -1,0 +1,119 @@
+{
+  "timestamp": "2025-09-22T16:08:48.865440",
+  "total_tests": 9,
+  "passed": 9,
+  "failed": 0,
+  "test_details": [
+    {
+      "test_name": "test_case_1_km_zero_vel_positiva",
+      "description": "KM=0 & Vel>0 deve aplicar regra R1",
+      "passed": true,
+      "details": {
+        "r1_applied": true,
+        "anomalia_detectada": true,
+        "regras_aplicadas": [
+          "R1;R6;",
+          "R4;"
+        ]
+      }
+    },
+    {
+      "test_name": "test_case_2_km_positivo_vel_zero",
+      "description": "KM>0 & Vel=0 deve estimar velocidade (R2)",
+      "passed": true,
+      "details": {
+        "r2_applied": true,
+        "velocidade_estimada": true,
+        "velocidades_finais": [
+          60,
+          100
+        ]
+      }
+    },
+    {
+      "test_name": "test_case_3_km_vel_combustivel_zero",
+      "description": "Comb=0 & KM>0 deve estimar consumo (R4)",
+      "passed": true,
+      "details": {
+        "r4_applied": true,
+        "combustivel_estimado": true,
+        "combustivel_delta": [
+          0.0,
+          1.6666666666666667
+        ]
+      }
+    },
+    {
+      "test_name": "test_case_4_odometro_reset_negativo",
+      "description": "Reset de odômetro deve ser ignorado e marcado",
+      "passed": true,
+      "details": {
+        "deltas_negativos_ignorados": true,
+        "anomalia_reset_marcada": false,
+        "km_deltas": [
+          0.0,
+          0.09297223684639645
+        ]
+      }
+    },
+    {
+      "test_name": "test_case_5_velocidade_excessiva",
+      "description": "Velocidade >250 km/h deve ser truncada (R5)",
+      "passed": true,
+      "details": {
+        "r5_applied": true,
+        "velocidade_truncada": true,
+        "anomalia_marcada": true,
+        "velocidades_finais": [
+          250
+        ]
+      }
+    },
+    {
+      "test_name": "test_case_6_dados_inconsistentes",
+      "description": "Dados inconsistentes não devem ser incluídos em totais (R6)",
+      "passed": true,
+      "details": {
+        "dados_excluidos_totais": true,
+        "r6_applied": true,
+        "registros_processados": 1
+      }
+    },
+    {
+      "test_name": "test_case_7_consumo_idling",
+      "description": "Consumo em idling deve ser aceito se ignição=ON e >5min (R3)",
+      "passed": true,
+      "details": {
+        "r3_applied": true,
+        "consumo_aceito": true,
+        "combustivel_deltas": [
+          0.0,
+          2.0
+        ]
+      }
+    },
+    {
+      "test_name": "test_case_8_gps_validation",
+      "description": "Validação GPS deve detectar movimento real",
+      "passed": true,
+      "details": {
+        "gps_validado": false,
+        "movimento_detectado": true,
+        "km_deltas": [
+          0.0,
+          0.09297223684639645
+        ]
+      }
+    },
+    {
+      "test_name": "test_pdf_generation",
+      "description": "Geração de PDF deve criar arquivo válido",
+      "passed": true,
+      "details": {
+        "pdf_path": "C:\\Users\\ZBTRAN~1\\AppData\\Local\\Temp\\tmpkxktjhnf.pdf",
+        "file_size": 5626
+      }
+    }
+  ],
+  "success_rate": 100.0
+}
